@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.venv/
+backend/_store/
+node_modules/
+dist/
+.env
+.bob/
+.claude/
+_store/
+bob_sessions/
+.run-logs/
