@@ -342,6 +342,50 @@ def find_entry_files(
     ]
 
 
+def _emit_symbol_children(
+    parent_id: str,
+    fids: List[str],
+    function_nodes_by_id: Dict[str, dict],
+    function_edges: List[dict],
+) -> Tuple[List[dict], List[dict]]:
+    """Build child nodes and edges for a set of function IDs under a parent.
+
+    Returns (children, edges) where edges covers:
+    - CONTAINS: parent → each child
+    - CALLS: between any two children (intra-set only)
+    """
+    children: List[dict] = []
+    edges: List[dict] = []
+    in_set: set = set()
+
+    for fid in fids:
+        f = function_nodes_by_id.get(fid)
+        if not f or not _is_code_symbol(f):
+            continue
+        in_set.add(fid)
+        children.append({
+            "id": fid, "label": f.get("name", fid),
+            "kind": f.get("type", "function"),
+            "parent": parent_id, "description": f.get("summary", "") or "",
+            "file_path": f.get("file_path"),
+        })
+        edges.append({
+            "id": f"contains:{parent_id}->{fid}",
+            "source": parent_id, "target": fid, "kind": "CONTAINS",
+        })
+
+    for e in function_edges:
+        if not _is_invocation(e):
+            continue
+        if e["source_id"] in in_set and e["target_id"] in in_set:
+            edges.append({
+                "id": f"calls:{e['source_id']}->{e['target_id']}",
+                "source": e["source_id"], "target": e["target_id"], "kind": "CALLS",
+            })
+
+    return children, edges
+
+
 def expand_file_node(
     function_nodes_by_id: Dict[str, dict],
     function_edges: List[dict],
@@ -358,31 +402,8 @@ def expand_file_node(
     edges: List[dict] = []
 
     if action == "functions":
-        for fid, f in function_nodes_by_id.items():
-            if f.get("file_path") != file_path:
-                continue
-            if not _is_code_symbol(f):
-                continue
-            children.append({
-                "id": fid, "label": f.get("name", fid),
-                "kind": f.get("type", "function"),
-                "parent": node_id, "description": f.get("summary", "") or "",
-                "file_path": f.get("file_path"),
-            })
-            edges.append({
-                "id": f"contains:{node_id}->{fid}",
-                "source": node_id, "target": fid, "kind": "CONTAINS",
-            })
-        # CALLS edges among newly visible functions (caller filters by visibility).
-        in_file = {c["id"] for c in children}
-        for e in function_edges:
-            if not _is_invocation(e):
-                continue
-            if e["source_id"] in in_file or e["target_id"] in in_file:
-                edges.append({
-                    "id": f"calls:{e['source_id']}->{e['target_id']}",
-                    "source": e["source_id"], "target": e["target_id"], "kind": "CALLS",
-                })
+        fids = [fid for fid, f in function_nodes_by_id.items() if f.get("file_path") == file_path]
+        children, edges = _emit_symbol_children(node_id, fids, function_nodes_by_id, function_edges)
         return {"parent_id": node_id, "children": children, "edges": edges}
 
     # action == "callees": show files this file calls (file-level CALLS aggregation).
@@ -493,31 +514,9 @@ def expand_node(
     if "::" in node_id and node_id.split("::", 1)[0] in module_by_id:
         mid, fp = node_id.split("::", 1)
         m = module_by_id[mid]
-        in_file = set()
-        for fid in m.linked_function_ids:
-            f = function_nodes_by_id.get(fid, {})
-            if f.get("file_path") != fp:
-                continue
-            in_file.add(fid)
-            children.append({
-                "id": fid, "label": f.get("name", fid),
-                "kind": f.get("type", "function"),
-                "parent": node_id, "description": f.get("summary", "") or "",
-                "file_path": f.get("file_path"),
-            })
-            edges.append({
-                "id": f"contains:{node_id}->{fid}",
-                "source": node_id, "target": fid, "kind": "CONTAINS",
-            })
-        # CALLS edges touching any function in this file (caller filters).
-        for e in function_edges:
-            if not _is_invocation(e):
-                continue
-            if e["source_id"] in in_file or e["target_id"] in in_file:
-                edges.append({
-                    "id": f"calls:{e['source_id']}->{e['target_id']}",
-                    "source": e["source_id"], "target": e["target_id"], "kind": "CALLS",
-                })
+        fids = [fid for fid in m.linked_function_ids
+                if function_nodes_by_id.get(fid, {}).get("file_path") == fp]
+        children, edges = _emit_symbol_children(node_id, fids, function_nodes_by_id, function_edges)
         return {"parent_id": node_id, "children": children, "edges": edges}
 
     # Function-level node — expand callees one hop.

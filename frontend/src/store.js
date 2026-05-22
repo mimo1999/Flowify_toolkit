@@ -72,22 +72,29 @@ export const useFlowStore = create((set, get) => ({
     const { graphId, expanded, nodes, edges, rootIds } = get();
     if (!graphId || !nodes[nodeId]) return;
 
+    // Collect all node IDs in the subtree rooted at `id` (excluding `id` itself).
+    const collectDescendants = (newExpanded, id, out = new Set()) => {
+      for (const k of (newExpanded[id] || [])) {
+        out.add(k);
+        collectDescendants(newExpanded, k, out);
+      }
+      return out;
+    };
+
     const removeSubtreeFrom = (newNodes, newEdges, newExpanded, id, keepSelf) => {
-      const kids = newExpanded[id] || [];
-      for (const k of kids) removeSubtreeFrom(newNodes, newEdges, newExpanded, k, false);
+      const removed = collectDescendants(newExpanded, id);
+      // Delete descendant nodes and their expanded entries
+      for (const k of removed) {
+        delete newNodes[k];
+        delete newExpanded[k];
+      }
       delete newExpanded[id];
-      if (!keepSelf) {
-        delete newNodes[id];
-        for (const eid of Object.keys(newEdges)) {
-          const e = newEdges[eid];
-          if (e.source === id || e.target === id) delete newEdges[eid];
-        }
-      } else {
-        // Self stays, but drop edges to descendants (they're being removed).
-        for (const eid of Object.keys(newEdges)) {
-          const e = newEdges[eid];
-          if (!newNodes[e.source] || !newNodes[e.target]) delete newEdges[eid];
-        }
+      if (!keepSelf) removed.add(id), delete newNodes[id];
+
+      // Single edge sweep over all removed nodes
+      for (const eid of Object.keys(newEdges)) {
+        const e = newEdges[eid];
+        if (removed.has(e.source) || removed.has(e.target)) delete newEdges[eid];
       }
     };
 
@@ -108,7 +115,8 @@ export const useFlowStore = create((set, get) => ({
 
     // Rule: if expanding a ROOT node, collapse every other root's subtree first
     // (but keep the root nodes themselves visible).
-    const isRoot = rootIds.includes(nodeId);
+    const rootIdSet = new Set(rootIds);
+    const isRoot = rootIdSet.has(nodeId);
     if (isRoot) {
       for (const rid of rootIds) {
         if (rid !== nodeId && newExpanded[rid]) {

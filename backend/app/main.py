@@ -35,6 +35,13 @@ def _generate_repo_id(repo_path: str, custom_id: str | None = None) -> str:
     return hashlib.sha256(repo_path.encode()).hexdigest()[:12]
 
 
+def _serialize_payload(payload):
+    """Return (func_by_id_dict, function_edges_list) ready for module_abstractor helpers."""
+    func_by_id = {n.id: n.model_dump() for n in payload.function_nodes}
+    function_edges = [e.model_dump() for e in payload.function_edges]
+    return func_by_id, function_edges
+
+
 @app.post("/ingest_repo")
 def ingest_repo(req: IngestRequest):
     """Legacy ingest endpoint - maintained for backward compatibility."""
@@ -143,8 +150,7 @@ def get_entry_points(graph_id: str, max_count: int = 4):
     payload = storage.load(graph_id)
     if payload is None:
         raise HTTPException(404, "graph not found")
-    func_by_id = {n.id: n.model_dump() for n in payload.function_nodes}
-    function_edges = [e.model_dump() for e in payload.function_edges]
+    func_by_id, function_edges = _serialize_payload(payload)
     declared = (storage.load_meta(graph_id, "repo_context") or {}).get("key_entry_points", [])
     nodes = module_abstractor.find_entry_files(
         func_by_id, function_edges, declared_entry_points=declared, max_count=max_count,
@@ -163,8 +169,7 @@ def expand_graph_node(graph_id: str, node_id: str, action: str = "callees"):
     payload = storage.load(graph_id)
     if payload is None:
         raise HTTPException(404, "graph not found")
-    func_by_id = {n.id: n.model_dump() for n in payload.function_nodes}
-    function_edges = [e.model_dump() for e in payload.function_edges]
+    func_by_id, function_edges = _serialize_payload(payload)
 
     if node_id.startswith("file::"):
         return module_abstractor.expand_file_node(
@@ -178,7 +183,7 @@ def expand_graph_node(graph_id: str, node_id: str, action: str = "callees"):
 @app.get("/graph")
 def get_graph(graph_id: str, depth: int = 1):
     """Get graph at specified depth with enhanced module metadata.
-    
+
     Depth 1: Shows modules with entry point tagging and control flow summaries
     Depth 2: Shows file-level submodules
     Depth 3: Shows individual functions
@@ -187,12 +192,10 @@ def get_graph(graph_id: str, depth: int = 1):
     if payload is None:
         raise HTTPException(404, "graph not found")
     depth = max(1, min(3, depth))
-    func_by_id = {n.id: n.model_dump() for n in payload.function_nodes}
-    function_edges = [e.model_dump() for e in payload.function_edges]
+    func_by_id, function_edges = _serialize_payload(payload)
     view = module_abstractor.collapse_for_depth(
         payload.module_nodes, payload.module_edges,
-        payload.module_to_functions, func_by_id, depth,
-        function_edges,
+        payload.module_to_functions, func_by_id, depth, function_edges,
     )
     view["graph_id"] = graph_id
     view["repo_path"] = payload.repo_path
@@ -410,7 +413,7 @@ def get_llm_ingestion_prompt(graph_id: str):
 @app.post("/feedback")
 def submit_feedback(req: FeedbackRequest):
     """Submit user feedback on query results.
-    
+
     Helps the system learn which results are helpful and improve over time.
     """
     success = learning.record_feedback(
@@ -420,7 +423,10 @@ def submit_feedback(req: FeedbackRequest):
         req.comment,
         req.corrections
     )
-    
+    if not success:
+        raise HTTPException(404, "query not found")
+    return {"status": "feedback recorded", "query_id": req.query_id}
+
 
 @app.get("/module_details")
 def get_module_details(graph_id: str, module_id: str):
@@ -501,11 +507,6 @@ def get_module_details(graph_id: str, module_id: str):
         "functions": functions,
         "control_flow_groups": control_flow_details,
     }
-
-    if not success:
-        raise HTTPException(404, "query not found")
-    
-    return {"status": "feedback recorded", "query_id": req.query_id}
 
 
 @app.get("/analytics")
