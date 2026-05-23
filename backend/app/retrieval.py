@@ -6,7 +6,7 @@ import time
 import networkx as nx
 
 from .models import GraphPayload
-from . import bob_client, learning
+from . import llm_provider as bob_client, learning
 
 
 def _is_code_symbol(data: dict) -> bool:

@@ -1,4 +1,4 @@
-from typing import List, Optional, Literal, Dict, Any
+from typing import List, Optional, Literal, Dict, Any, Union
 from pydantic import BaseModel, Field
 from datetime import datetime
 import uuid
@@ -482,7 +482,7 @@ class FeedbackRequest(BaseModel):
     
     graph_id: str
     query_id: str
-    rating: Literal["helpful", "neutral", "unhelpful"]
+    rating: Union[Literal["helpful", "neutral", "unhelpful"], int, float]
     comment: Optional[str] = None
     corrections: Optional[Dict[str, Any]] = Field(
         None,

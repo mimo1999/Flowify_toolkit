@@ -39,10 +39,35 @@ Frontend → http://localhost:5173 · Backend → http://localhost:8000 · API d
 
 ## Environment variables
 
+### Provider selection
+
+Set `LLM_PROVIDER` to choose your AI backend. If unset, the first provider whose key is present is used; if none are found, heuristic stubs run without any LLM.
+
+| `LLM_PROVIDER` value | Provider | Required key(s) |
+|---|---|---|
+| `bob` | IBM watsonx / Bob | `BOB_API_KEY`, `BOB_API_URL` |
+| `claude` | Anthropic Claude | `ANTHROPIC_API_KEY` |
+| `openai` | OpenAI / Codex | `OPENAI_API_KEY` |
+| `copilot` | GitHub Copilot | `GITHUB_TOKEN` |
+| `openclaw` | OpenClaw | `OPENCLAW_API_KEY`, `OPENCLAW_API_URL` |
+| `heuristic` | No LLM (stubs) | *(none)* |
+
+### All variables
+
 | Variable | Default | Purpose |
 |---|---|---|
-| `BOB_API_KEY` | *(unset)* | IBM Bob API key; falls back to heuristic stubs if unset |
-| `BOB_API_URL` | *(placeholder)* | Bob endpoint URL |
+| `LLM_PROVIDER` | *(auto-detect)* | Select the AI provider (see table above) |
+| `BOB_API_KEY` | *(unset)* | IBM Bob / watsonx API key |
+| `BOB_API_URL` | IBM endpoint | IBM Bob API URL |
+| `ANTHROPIC_API_KEY` | *(unset)* | Anthropic Claude API key |
+| `ANTHROPIC_MODEL` | `claude-3-5-haiku-20241022` | Claude model to use |
+| `OPENAI_API_KEY` | *(unset)* | OpenAI API key |
+| `OPENAI_BASE_URL` | `https://api.openai.com/v1` | Override for Azure / local models |
+| `OPENAI_MODEL` | `gpt-4o-mini` | OpenAI model to use |
+| `GITHUB_TOKEN` | *(unset)* | GitHub token for Copilot access |
+| `COPILOT_MODEL` | `gpt-4o` | Copilot model to use |
+| `OPENCLAW_API_KEY` | *(unset)* | OpenClaw API key |
+| `OPENCLAW_API_URL` | *(unset)* | OpenClaw endpoint URL |
 | `FLOWIFY_STORE` | `./_store` | Directory for persisted graph JSON |
 
 ## API reference

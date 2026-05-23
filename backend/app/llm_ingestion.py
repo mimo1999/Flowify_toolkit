@@ -5,6 +5,7 @@ packages them into a prompt, and validates the returned node-level JSON.
 """
 from __future__ import annotations
 
+import json
 import textwrap
 from typing import Dict, List
 
@@ -134,10 +135,10 @@ def build_prompt(
         {repo_context.model_dump_json(indent=2)}
 
         Ground-truth modules:
-        {bob_client.json.dumps(ground_truth_modules, indent=2)}
+        {json.dumps(ground_truth_modules, indent=2)}
 
         AST-derived nodes:
-        {bob_client.json.dumps(ast_nodes, indent=2)}
+        {json.dumps(ast_nodes, indent=2)}
 
         Return exactly one JSON object with this schema:
         {{

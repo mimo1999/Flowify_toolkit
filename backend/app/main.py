@@ -78,8 +78,10 @@ def mcp_ingest_repo(req: IngestRequest):
         # Generate stable repo_id
         repo_id = _generate_repo_id(req.repo_path, req.repo_id)
         
-        # Check if already ingested (idempotent)
-        existing_graphs = storage.list_graphs()
+        # Check if already ingested (idempotent).
+        # list_graphs() returns base IDs and meta suffixes (e.g. "abc.repo_context");
+        # only attempt to load pure graph IDs (no dot in name).
+        existing_graphs = [g for g in storage.list_graphs() if "." not in g]
         for graph_id in existing_graphs:
             payload = storage.load(graph_id)
             if payload and payload.repo_path == req.repo_path:
@@ -416,10 +418,16 @@ def submit_feedback(req: FeedbackRequest):
 
     Helps the system learn which results are helpful and improve over time.
     """
+    # Normalise numeric ratings (1-5 stars) to the string literals the
+    # learning layer expects.  String ratings pass through unchanged.
+    rating = req.rating
+    if isinstance(rating, (int, float)):
+        rating = "helpful" if rating >= 4 else "unhelpful" if rating <= 2 else "neutral"
+
     success = learning.record_feedback(
         req.graph_id,
         req.query_id,
-        req.rating,
+        rating,
         req.comment,
         req.corrections
     )

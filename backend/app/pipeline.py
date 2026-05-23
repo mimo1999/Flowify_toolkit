@@ -4,7 +4,7 @@ from typing import Dict
 
 import networkx as nx
 
-from . import bob_client, storage, graph_builder, module_abstractor, git_updater, llm_ingestion
+from . import llm_provider as bob_client, storage, graph_builder, module_abstractor, git_updater, llm_ingestion
 from .models import GraphPayload, FunctionNode, RepositoryContext, SemanticMetadata, SemanticEdge
 
 
