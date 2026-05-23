@@ -128,7 +128,7 @@ export const useFlowStore = create((set, get) => ({
 
     const childIds = [];
     for (const c of data.children) {
-      nn[c.id] = c;
+      if (!nn[c.id]) nn[c.id] = c;  // skip-if-exists: preserve existing node's parent
       childIds.push(c.id);
     }
     for (const e of data.edges) {

@@ -263,10 +263,16 @@ function GraphViewInner() {
     }).filter(Boolean);
   }, [visibleEdges, childrenOf, highlight]);
 
-  // Run dagre
+  // All edges for dagre layout (no pruning — every child needs an edge to be ranked)
+  const dagreEdges = useMemo(
+    () => Object.values(visibleEdges).map((e) => ({ source: e.source, target: e.target })),
+    [visibleEdges],
+  );
+
+  // Run dagre with full edge set so middle siblings are not orphaned
   const positioned = useMemo(
-    () => dagreLayout(Object.values(visibleNodes), rfEdges),
-    [visibleNodes, rfEdges],
+    () => dagreLayout(Object.values(visibleNodes), dagreEdges),
+    [visibleNodes, dagreEdges],
   );
 
   // Build RF nodes with custom types
