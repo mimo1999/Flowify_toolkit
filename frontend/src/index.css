@@ -2,13 +2,68 @@
 @tailwind components;
 @tailwind utilities;
 
-html, body, #root { height: 100%; }
-.react-flow__node { font-size: 12px; }
+html, body, #root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  background: #07090f;
+  color: #e2e8f0;
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+}
 
-@keyframes slide-in-right {
-  from { transform: translateX(100%); opacity: 0; }
+/* React Flow overrides */
+.react-flow { background: #07090f; }
+.react-flow__node { font-size: 13px; cursor: pointer; }
+.react-flow__edge-path { stroke-width: 1.5; }
+.react-flow__controls {
+  background: #0f1629 !important;
+  border: 1px solid #1e2d4a !important;
+  border-radius: 10px !important;
+  overflow: hidden;
+  box-shadow: 0 4px 24px rgba(0,0,0,0.4);
+}
+.react-flow__controls-button {
+  background: #0f1629 !important;
+  border-bottom: 1px solid #1e2d4a !important;
+  color: #94a3b8 !important;
+  fill: #94a3b8 !important;
+}
+.react-flow__controls-button:hover {
+  background: #1a2540 !important;
+  color: #e2e8f0 !important;
+  fill: #e2e8f0 !important;
+}
+.react-flow__minimap {
+  background: #0f1629 !important;
+  border: 1px solid #1e2d4a !important;
+  border-radius: 10px !important;
+  overflow: hidden;
+}
+.react-flow__attribution { display: none !important; }
+
+/* Slide-in animation */
+@keyframes slideInRight {
+  from { transform: translateX(105%); opacity: 0; }
   to   { transform: translateX(0);    opacity: 1; }
 }
-.animate-slide-in-right {
-  animation: slide-in-right 0.22s ease-out both;
+.slide-in-right { animation: slideInRight 0.25s cubic-bezier(.16,1,.3,1) both; }
+
+/* Fade in */
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
 }
+.fade-in { animation: fadeIn 0.2s ease both; }
+
+/* Node pulse on highlight */
+@keyframes nodePulse {
+  0%, 100% { box-shadow: 0 0 0 2px rgba(251,191,36,0.5); }
+  50%       { box-shadow: 0 0 0 6px rgba(251,191,36,0.15); }
+}
+.node-highlighted { animation: nodePulse 1.5s ease-in-out infinite; }
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 4px; height: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #1e2d4a; border-radius: 9999px; }
+::-webkit-scrollbar-thumb:hover { background: #2a3f6a; }

@@ -1,98 +1,215 @@
-import React from "react";
+import React, { useEffect, useState } from "react";
 import { useFlowStore } from "../store.js";
 
-export default function Sidebar() {
-  const { repoPath, setRepoPath, ingest, update, graphId, loading, error, nodes, expanded, viewHistory, goBack, resetView } =
-    useFlowStore();
+// ── Icons ────────────────────────────────────────────────────────────────────
+const RepoIcon = () => (
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+    <path d="M3 3h18v18H3z" rx="2"/><path d="M3 9h18"/><path d="M9 21V9"/>
+  </svg>
+);
+const BackIcon = () => (
+  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+    <polyline points="15,18 9,12 15,6"/>
+  </svg>
+);
+const ResetIcon = () => (
+  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+    <polyline points="1,4 1,10 7,10"/>
+    <path d="M3.51 15a9 9 0 1 0 .49-3.93"/>
+  </svg>
+);
 
-  const moduleCount = Object.values(nodes).filter((n) => n.kind === "module").length;
-  const visibleCount = Object.keys(nodes).length;
+// ── Provider badge ────────────────────────────────────────────────────────────
+function ProviderBadge() {
+  const [info, setInfo] = useState(null);
+  useEffect(() => {
+    fetch("/api/provider_info").then(r => r.json()).then(setInfo).catch(() => {});
+  }, []);
+  if (!info) return null;
+  return (
+    <div className={`flex items-center gap-1.5 text-[10px] px-2.5 py-1 rounded-full border w-fit ${
+      info.is_stub
+        ? "text-amber-400 border-amber-800/50 bg-amber-950/40"
+        : "text-emerald-400 border-emerald-800/50 bg-emerald-950/40"
+    }`}>
+      <span className={`w-1.5 h-1.5 rounded-full ${info.is_stub ? "bg-amber-400" : "bg-emerald-400"}`} />
+      {info.display_name}
+    </div>
+  );
+}
+
+// ── Stat row ──────────────────────────────────────────────────────────────────
+function Stat({ label, value }) {
+  return (
+    <div className="flex justify-between items-center">
+      <span className="text-slate-500 text-xs">{label}</span>
+      <span className="text-slate-300 text-xs font-mono">{value}</span>
+    </div>
+  );
+}
+
+// ── Legend item ───────────────────────────────────────────────────────────────
+function LegendItem({ children, color, dashed }) {
+  return (
+    <div className="flex items-center gap-2.5">
+      <span
+        className="inline-block w-6 shrink-0"
+        style={{
+          height: 2,
+          background: dashed ? "transparent" : color,
+          borderTop: dashed ? `2px dashed ${color}` : undefined,
+        }}
+      />
+      <span className="text-slate-500 text-xs">{children}</span>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+export default function Sidebar() {
+  const {
+    repoPath, setRepoPath, ingest, update,
+    graphId, loading, error,
+    nodes, expanded, viewHistory,
+    goBack, resetView,
+  } = useFlowStore();
+
+  const fileCount     = Object.values(nodes).filter(n => n.kind === "file").length;
+  const fnCount       = Object.values(nodes).filter(n => n.kind !== "file" && n.kind !== "module").length;
   const expandedCount = Object.keys(expanded).length;
-  const canGoBack = viewHistory.length > 0;
+  const canGoBack     = viewHistory.length > 0;
 
   return (
-    <aside className="w-72 bg-slate-900 border-r border-slate-800 p-4 flex flex-col gap-4 text-sm">
-      <div>
-        <h1 className="text-lg font-semibold tracking-tight">Flowify AI</h1>
-        <p className="text-xs text-slate-500 mt-0.5">Click a module to expand its files; click a file to expand its functions.</p>
+    <aside className="w-72 shrink-0 flex flex-col bg-[#0a0f1a] border-r border-[#1a2540] overflow-hidden">
+
+      {/* Brand */}
+      <div className="px-5 pt-5 pb-4 border-b border-[#1a2540]">
+        <div className="flex items-center gap-2.5 mb-1">
+          <div className="w-7 h-7 rounded-lg bg-blue-600 flex items-center justify-center shrink-0">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="white">
+              <circle cx="12" cy="12" r="3"/>
+              <circle cx="5" cy="5" r="2.5"/><circle cx="19" cy="5" r="2.5"/>
+              <circle cx="5" cy="19" r="2.5"/><circle cx="19" cy="19" r="2.5"/>
+              <line x1="12" y1="9" x2="5" y2="5" stroke="white" strokeWidth="1.5"/>
+              <line x1="12" y1="9" x2="19" y2="5" stroke="white" strokeWidth="1.5"/>
+              <line x1="12" y1="15" x2="5" y2="19" stroke="white" strokeWidth="1.5"/>
+              <line x1="12" y1="15" x2="19" y2="19" stroke="white" strokeWidth="1.5"/>
+            </svg>
+          </div>
+          <div>
+            <div className="font-semibold text-white text-sm leading-tight">Flowify AI</div>
+            <div className="text-[10px] text-slate-500">Code graph explorer</div>
+          </div>
+        </div>
+        <div className="mt-3">
+          <ProviderBadge />
+        </div>
       </div>
 
-      <label className="flex flex-col gap-1">
-        <span className="text-slate-400 text-xs uppercase tracking-wide">Repository</span>
-        <input
-          className="bg-slate-950 border border-slate-700 rounded px-2 py-1.5 focus:outline-none focus:border-sky-500"
-          value={repoPath}
-          onChange={(e) => setRepoPath(e.target.value)}
-          placeholder="/abs/path/to/repo"
-        />
-      </label>
+      {/* Scrollable body */}
+      <div className="flex-1 overflow-y-auto px-4 py-4 flex flex-col gap-4">
 
-      <div className="flex gap-2">
-        <button onClick={ingest} disabled={loading || !repoPath}
-          className="flex-1 bg-emerald-600 hover:bg-emerald-500 rounded px-2 py-1.5 disabled:opacity-50 font-medium">
-          {loading ? "…" : graphId ? "Re-ingest" : "Ingest"}
-        </button>
-        <button onClick={update} disabled={!graphId || loading}
-          className="flex-1 bg-sky-600 hover:bg-sky-500 rounded px-2 py-1.5 disabled:opacity-50 font-medium">
-          Update
-        </button>
-      </div>
+        {/* Repository input */}
+        <div>
+          <label className="block text-[10px] uppercase tracking-widest text-slate-500 font-semibold mb-2">
+            Repository path
+          </label>
+          <input
+            className="w-full bg-[#0f1629] border border-[#1e2d4a] rounded-lg px-3 py-2 text-sm text-slate-200 placeholder:text-slate-600 focus:outline-none focus:border-blue-500 transition-colors"
+            placeholder="/absolute/path/to/repo"
+            value={repoPath}
+            onChange={(e) => setRepoPath(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && ingest()}
+          />
+        </div>
 
-      {graphId && (
+        {/* Action buttons */}
         <div className="flex gap-2">
           <button
-            onClick={goBack}
-            disabled={!canGoBack}
-            className="flex-1 bg-slate-700 hover:bg-slate-600 rounded px-2 py-1.5 disabled:opacity-30 disabled:cursor-not-allowed font-medium text-xs"
-            title="Go back to previous view"
+            onClick={ingest}
+            disabled={loading || !repoPath}
+            className="flex-1 bg-blue-600 hover:bg-blue-500 disabled:opacity-40 disabled:cursor-not-allowed rounded-lg px-3 py-2 text-sm font-medium text-white transition-colors"
           >
-            ← Back
+            {loading ? (
+              <span className="flex items-center justify-center gap-2">
+                <svg className="animate-spin" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3">
+                  <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4"/>
+                </svg>
+                Loading…
+              </span>
+            ) : graphId ? "Re-ingest" : "Ingest"}
           </button>
           <button
-            onClick={resetView}
-            disabled={loading}
-            className="flex-1 bg-slate-700 hover:bg-slate-600 rounded px-2 py-1.5 disabled:opacity-50 font-medium text-xs"
-            title="Reset to initial view"
+            onClick={update}
+            disabled={!graphId || loading}
+            className="px-3 py-2 rounded-lg text-sm font-medium border border-[#1e2d4a] text-slate-400 hover:text-slate-200 hover:border-slate-500 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
           >
-            ⟲ Reset
+            Sync
           </button>
         </div>
-      )}
 
-      {graphId && (
-        <div className="bg-slate-950 border border-slate-800 rounded p-2 text-xs space-y-1">
-          <div className="flex justify-between"><span className="text-slate-500">graph_id</span>
-            <span className="font-mono text-slate-300">{graphId.slice(0, 8)}…</span></div>
-          <div className="flex justify-between"><span className="text-slate-500">modules</span>
-            <span className="text-slate-200">{moduleCount}</span></div>
-          <div className="flex justify-between"><span className="text-slate-500">visible nodes</span>
-            <span className="text-slate-200">{visibleCount}</span></div>
-          <div className="flex justify-between"><span className="text-slate-500">expanded</span>
-            <span className="text-slate-200">{expandedCount}</span></div>
-        </div>
-      )}
+        {/* Navigation */}
+        {graphId && (
+          <div className="flex gap-2">
+            <button
+              onClick={goBack}
+              disabled={!canGoBack}
+              title="Go back"
+              className="flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg text-xs border border-[#1e2d4a] text-slate-400 hover:text-slate-200 hover:border-slate-500 disabled:opacity-25 disabled:cursor-not-allowed transition-colors"
+            >
+              <BackIcon /> Back
+            </button>
+            <button
+              onClick={resetView}
+              disabled={loading}
+              title="Reset to root view"
+              className="flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg text-xs border border-[#1e2d4a] text-slate-400 hover:text-slate-200 hover:border-slate-500 disabled:opacity-25 disabled:cursor-not-allowed transition-colors"
+            >
+              <ResetIcon /> Reset
+            </button>
+          </div>
+        )}
 
-      <div className="text-xs text-slate-500 leading-relaxed">
-        <div className="flex items-center gap-2 mb-1">
-          <span className="inline-block w-3 h-3 rounded-sm bg-blue-900 border border-blue-500" /> module
-        </div>
-        <div className="flex items-center gap-2 mb-1">
-          <span className="inline-block w-3 h-3 rounded-sm bg-slate-950 border border-slate-600" /> file / function
-        </div>
-        <div className="flex items-center gap-2 mb-1">
-          <span className="inline-block w-6 h-0.5 bg-sky-500" /> FLOW
-        </div>
-        <div className="flex items-center gap-2 mb-1">
-          <span className="inline-block w-6 h-0.5 bg-slate-400" /> CALLS
-        </div>
-        <div className="flex items-center gap-2">
-          <span className="inline-block w-6 border-t border-dashed border-slate-500" /> CONTAINS
+        {/* Graph stats */}
+        {graphId && (
+          <div className="rounded-lg bg-[#0f1629] border border-[#1a2540] p-3 space-y-2">
+            <div className="text-[10px] uppercase tracking-widest text-slate-600 font-semibold mb-2">Graph</div>
+            <Stat label="ID" value={`${graphId.slice(0, 8)}…`} />
+            <Stat label="Visible files" value={fileCount} />
+            <Stat label="Visible symbols" value={fnCount} />
+            <Stat label="Expanded" value={expandedCount} />
+          </div>
+        )}
+
+        {/* Legend */}
+        <div className="rounded-lg bg-[#0f1629] border border-[#1a2540] p-3">
+          <div className="text-[10px] uppercase tracking-widest text-slate-600 font-semibold mb-3">Legend</div>
+          <div className="space-y-2">
+            <div className="flex items-center gap-2.5">
+              <span className="w-6 h-4 rounded shrink-0 bg-gradient-to-br from-blue-950 to-blue-900 border border-blue-800/60" />
+              <span className="text-slate-500 text-xs">File node</span>
+            </div>
+            <div className="flex items-center gap-2.5">
+              <span className="w-6 h-4 rounded shrink-0 bg-gradient-to-br from-indigo-950 to-indigo-900 border border-indigo-800/60" />
+              <span className="text-slate-500 text-xs">Function / Method</span>
+            </div>
+            <div className="flex items-center gap-2.5">
+              <span className="w-6 h-4 rounded shrink-0 bg-gradient-to-br from-emerald-950 to-emerald-900 border border-emerald-800/60" />
+              <span className="text-slate-500 text-xs">Class</span>
+            </div>
+            <div className="my-1 border-t border-[#1a2540]" />
+            <LegendItem color="#3b82f6">Calls edge</LegendItem>
+            <LegendItem color="#1e3a5a" dashed>Contains</LegendItem>
+          </div>
         </div>
       </div>
 
-      <div className="flex-1" />
-
-      {error && <div className="text-xs text-rose-400 break-words bg-rose-950/40 border border-rose-900 p-2 rounded">{error}</div>}
+      {/* Error */}
+      {error && (
+        <div className="mx-4 mb-4 text-xs text-rose-400 bg-rose-950/40 border border-rose-900/60 rounded-lg p-2.5 break-words">
+          {error}
+        </div>
+      )}
     </aside>
   );
 }

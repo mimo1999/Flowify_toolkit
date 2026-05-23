@@ -1,42 +1,154 @@
-import React, { useMemo, useEffect, useRef } from "react";
+import React, { useMemo, useEffect, useRef, useCallback } from "react";
 import ReactFlow, {
   Background, Controls, MiniMap,
   useNodesState, useEdgesState,
-  NodeToolbar, Position,
+  Handle, Position,
   useReactFlow,
+  BackgroundVariant,
 } from "reactflow";
 import dagre from "@dagrejs/dagre";
 import { useFlowStore } from "../store.js";
 
-// ---------------------------------------------------------------------------
-// Dagre-based left-to-right layout.
-// Replaces the hand-rolled treeLayout which caused overlap on large graphs.
-// ---------------------------------------------------------------------------
+// ─────────────────────────────────────────────────────────────────────────────
+// Icons (inline SVG, no external dep)
+// ─────────────────────────────────────────────────────────────────────────────
+const FileIcon = () => (
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+    <polyline points="14,2 14,8 20,8"/>
+  </svg>
+);
+const FnIcon = () => (
+  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+    <polyline points="16,18 22,12 16,6"/><polyline points="8,6 2,12 8,18"/>
+  </svg>
+);
+const ClassIcon = () => (
+  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+    <rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/>
+  </svg>
+);
+const ChevronRight = () => (
+  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+    <polyline points="9,18 15,12 9,6"/>
+  </svg>
+);
+const ChevronDown = () => (
+  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+    <polyline points="6,9 12,15 18,9"/>
+  </svg>
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Custom node types
+// ─────────────────────────────────────────────────────────────────────────────
+function FileNodeComponent({ data }) {
+  const { label, filePath, fnCount, isExpanded, isHighlighted, isSelected } = data;
+
+  return (
+    <div
+      className={[
+        "group relative rounded-xl border transition-all duration-150 select-none",
+        "bg-gradient-to-br from-blue-950/80 to-blue-900/40",
+        isHighlighted
+          ? "border-amber-400 shadow-[0_0_0_2px_rgba(251,191,36,0.25)] node-highlighted"
+          : isSelected
+          ? "border-blue-400 shadow-[0_0_16px_rgba(59,130,246,0.3)]"
+          : "border-blue-800/60 hover:border-blue-500/80 shadow-[0_2px_12px_rgba(0,0,0,0.4)]",
+      ].join(" ")}
+      style={{ minWidth: 180, maxWidth: 260 }}
+    >
+      <Handle type="target" position={Position.Left} className="!bg-blue-500 !border-blue-700 !w-2 !h-2" />
+
+      <div className="px-4 py-3">
+        <div className="flex items-center gap-2 mb-1">
+          <span className="text-blue-400 shrink-0"><FileIcon /></span>
+          <span className="text-[10px] uppercase tracking-widest text-blue-400/70 font-semibold">File</span>
+          <span className="ml-auto text-blue-400/50 shrink-0">
+            {isExpanded ? <ChevronDown /> : <ChevronRight />}
+          </span>
+        </div>
+        <div className="font-semibold text-sm text-white leading-snug truncate">{label}</div>
+        {filePath && (
+          <div className="text-[10px] text-blue-300/50 mt-0.5 truncate">{filePath}</div>
+        )}
+        {fnCount > 0 && (
+          <div className="mt-2 inline-flex items-center gap-1 text-[10px] text-blue-300/60 bg-blue-900/30 rounded-full px-2 py-0.5">
+            <FnIcon />{fnCount} symbols
+          </div>
+        )}
+      </div>
+
+      <Handle type="source" position={Position.Right} className="!bg-blue-500 !border-blue-700 !w-2 !h-2" />
+    </div>
+  );
+}
+
+function FunctionNodeComponent({ data }) {
+  const { label, kind, isHighlighted, isSelected, isExpanded, hasCallees } = data;
+
+  const isClass = kind === "class";
+  const accent = isClass
+    ? { border: "border-emerald-700/60", hoverBorder: "hover:border-emerald-500/80", text: "text-emerald-400", bg: "from-emerald-950/80 to-emerald-900/30", badge: "text-emerald-400/60 bg-emerald-900/30" }
+    : { border: "border-indigo-800/60", hoverBorder: "hover:border-indigo-500/80", text: "text-indigo-400", bg: "from-indigo-950/80 to-indigo-900/30", badge: "text-indigo-400/60 bg-indigo-900/30" };
+
+  return (
+    <div
+      className={[
+        "rounded-lg border transition-all duration-150 select-none",
+        `bg-gradient-to-br ${accent.bg}`,
+        isHighlighted
+          ? "border-amber-400 shadow-[0_0_0_2px_rgba(251,191,36,0.2)] node-highlighted"
+          : isSelected
+          ? `border-opacity-100 ${accent.border.replace('/60','')}`
+          : `${accent.border} ${accent.hoverBorder} shadow-[0_1px_8px_rgba(0,0,0,0.3)]`,
+      ].join(" ")}
+      style={{ minWidth: 150, maxWidth: 230 }}
+    >
+      <Handle type="target" position={Position.Left} className="!bg-indigo-500 !border-indigo-700 !w-1.5 !h-1.5" />
+
+      <div className="px-3 py-2.5">
+        <div className="flex items-center gap-1.5 mb-0.5">
+          <span className={`${accent.text} shrink-0`}>{isClass ? <ClassIcon /> : <FnIcon />}</span>
+          <span className={`text-[9px] uppercase tracking-wider font-semibold ${accent.text} opacity-70`}>
+            {kind || "fn"}
+          </span>
+          {hasCallees && (
+            <span className="ml-auto shrink-0 text-slate-500">
+              {isExpanded ? <ChevronDown /> : <ChevronRight />}
+            </span>
+          )}
+        </div>
+        <div className="font-mono text-xs text-white/90 truncate leading-snug">{label}</div>
+      </div>
+
+      <Handle type="source" position={Position.Right} className="!bg-indigo-500 !border-indigo-700 !w-1.5 !h-1.5" />
+    </div>
+  );
+}
+
+const nodeTypes = {
+  fileNode:     FileNodeComponent,
+  functionNode: FunctionNodeComponent,
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Dagre layout
+// ─────────────────────────────────────────────────────────────────────────────
 function dagreLayout(rawNodes, edgeList) {
   const g = new dagre.graphlib.Graph();
   g.setDefaultEdgeLabel(() => ({}));
-  g.setGraph({
-    rankdir: "LR",   // left-to-right hierarchy
-    nodesep: 55,     // vertical gap between sibling nodes
-    ranksep: 140,    // horizontal gap between depth levels
-    marginx: 40,
-    marginy: 40,
-  });
+  g.setGraph({ rankdir: "LR", nodesep: 50, ranksep: 130, marginx: 60, marginy: 60 });
 
   rawNodes.forEach((n) => {
-    const isLarge = n.kind === "module" || n.kind === "file";
-    g.setNode(n.id, { width: isLarge ? 220 : 170, height: 50 });
+    const isFile = n.kind === "file" || n.kind === "module";
+    g.setNode(n.id, { width: isFile ? 240 : 190, height: isFile ? 88 : 64 });
   });
-
   edgeList.forEach((e) => {
-    if (g.hasNode(e.source) && g.hasNode(e.target)) {
-      g.setEdge(e.source, e.target);
-    }
+    if (g.hasNode(e.source) && g.hasNode(e.target)) g.setEdge(e.source, e.target);
   });
-
   dagre.layout(g);
 
-  // Depth from parent relationship (drives colour; independent of dagre rank)
   const byId = {};
   rawNodes.forEach((n) => (byId[n.id] = n));
   const depthMap = {};
@@ -45,155 +157,168 @@ function dagreLayout(rawNodes, edgeList) {
     depthMap[id] = d;
     rawNodes.filter((n) => n.parent === id).forEach((c) => calcDepth(c.id, d + 1));
   };
-  rawNodes
-    .filter((n) => !n.parent || !byId[n.parent])
-    .forEach((r) => calcDepth(r.id, 0));
+  rawNodes.filter((n) => !n.parent || !byId[n.parent]).forEach((r) => calcDepth(r.id, 0));
 
   return rawNodes.map((n) => {
     const pos = g.node(n.id);
     return {
       ...n,
-      position: pos
-        ? { x: pos.x - pos.width / 2, y: pos.y - pos.height / 2 }
-        : { x: 0, y: 0 },
+      position: pos ? { x: pos.x - pos.width / 2, y: pos.y - pos.height / 2 } : { x: 0, y: 0 },
       depth: depthMap[n.id] ?? 0,
     };
   });
 }
 
-// ---------------------------------------------------------------------------
-// Depth-based colour schemes
-// ---------------------------------------------------------------------------
-const DEPTH_COLORS = [
-  { bg: "#1e3a8a", border: "#3b82f6", fg: "#f8fafc" },  // depth 0 — roots/files
-  { bg: "#065f46", border: "#10b981", fg: "#f0fdf4" },  // depth 1 — callees
-  { bg: "#7c2d12", border: "#f97316", fg: "#fff7ed" },  // depth 2 — functions
-  { bg: "#4c1d95", border: "#a78bfa", fg: "#faf5ff" },  // depth 3+
-];
-
-function getDepthStyle(depth) {
-  return DEPTH_COLORS[Math.min(depth, DEPTH_COLORS.length - 1)];
+// ─────────────────────────────────────────────────────────────────────────────
+// Empty state overlay
+// ─────────────────────────────────────────────────────────────────────────────
+function EmptyState() {
+  return (
+    <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none select-none">
+      <div className="text-center fade-in">
+        <div className="w-20 h-20 mx-auto mb-6 rounded-2xl bg-blue-950/60 border border-blue-800/40 flex items-center justify-center">
+          <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="#3b82f6" strokeWidth="1.5">
+            <circle cx="11" cy="11" r="8"/><circle cx="11" cy="11" r="3"/>
+            <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+          </svg>
+        </div>
+        <div className="text-xl font-semibold text-white/80 mb-2">No graph loaded</div>
+        <div className="text-sm text-slate-500 max-w-xs leading-relaxed">
+          Enter a repository path in the sidebar and click <strong className="text-slate-400">Ingest</strong> to explore its code graph.
+        </div>
+        <div className="mt-6 flex items-center gap-6 text-xs text-slate-600">
+          <span>Click nodes to expand</span>
+          <span className="w-1 h-1 rounded-full bg-slate-700" />
+          <span>Ask questions below</span>
+          <span className="w-1 h-1 rounded-full bg-slate-700" />
+          <span>Copy context for LLMs</span>
+        </div>
+      </div>
+    </div>
+  );
 }
 
-// ---------------------------------------------------------------------------
-// Main graph component
-// ---------------------------------------------------------------------------
+// ─────────────────────────────────────────────────────────────────────────────
+// Main component
+// ─────────────────────────────────────────────────────────────────────────────
 function GraphViewInner() {
-  const visibleNodes  = useFlowStore((s) => s.nodes);
-  const visibleEdges  = useFlowStore((s) => s.edges);
-  const expanded      = useFlowStore((s) => s.expanded);
-  const selectedId    = useFlowStore((s) => s.selectedId);
-  const highlight     = useFlowStore((s) => s.highlightPath);
-  const toggleExpand  = useFlowStore((s) => s.toggleExpand);
-  const selectNode    = useFlowStore((s) => s.selectNode);
+  const visibleNodes   = useFlowStore((s) => s.nodes);
+  const visibleEdges   = useFlowStore((s) => s.edges);
+  const expanded       = useFlowStore((s) => s.expanded);
+  const selectedId     = useFlowStore((s) => s.selectedId);
+  const highlight      = useFlowStore((s) => s.highlightPath);
+  const toggleExpand   = useFlowStore((s) => s.toggleExpand);
+  const selectNode     = useFlowStore((s) => s.selectNode);
   const clearSelection = useFlowStore((s) => s.clearSelection);
 
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
   const { fitView } = useReactFlow();
-  const prevNodeCountRef = useRef(0);
+  const prevCountRef = useRef(0);
 
-  // Memoise parent→children map for CONTAINS edge pruning
   const childrenOf = useMemo(() => {
     const map = {};
-    const nodeIds = new Set(Object.keys(visibleNodes));
+    const ids = new Set(Object.keys(visibleNodes));
     Object.values(visibleNodes).forEach((n) => {
-      if (n.parent && nodeIds.has(n.parent)) (map[n.parent] ||= []).push(n.id);
+      if (n.parent && ids.has(n.parent)) (map[n.parent] ||= []).push(n.id);
     });
     return map;
   }, [visibleNodes]);
 
-  // Build edge list for dagre (and for RF display)
+  // Build RF edges (with CONTAINS fan-out pruning)
   const rfEdges = useMemo(() => {
-    return Object.values(visibleEdges)
-      .map((e) => {
-        const isContains = e.kind === "CONTAINS";
-        const isFlow     = e.kind === "FLOW";
-        const isCalls    = e.kind === "CALLS";
+    const hl = new Set(highlight);
+    return Object.values(visibleEdges).map((e) => {
+      const isContains = e.kind === "CONTAINS";
+      const isFlow     = e.kind === "FLOW";
+      const isHighlightedEdge = hl.has(e.source) && hl.has(e.target);
 
-        // Prune CONTAINS fan-out: only draw to first and last child
-        if (isContains) {
-          const siblings = childrenOf[e.source] || [];
-          if (siblings.length > 2) {
-            const first = siblings[0];
-            const last  = siblings[siblings.length - 1];
-            if (e.target !== first && e.target !== last) return null;
-          }
+      if (isContains) {
+        const siblings = childrenOf[e.source] || [];
+        if (siblings.length > 3) {
+          const first = siblings[0], last = siblings[siblings.length - 1];
+          if (e.target !== first && e.target !== last) return null;
         }
+      }
 
-        return {
-          id: e.id,
-          source: e.source,
-          target: e.target,
-          animated: isFlow,
-          type: "smoothstep",
-          style: {
-            stroke:           isContains ? "#475569" : isFlow ? "#0ea5e9" : "#94a3b8",
-            strokeDasharray:  isContains ? "4 4" : undefined,
-            strokeWidth:      isFlow ? 2 : isCalls ? 1.4 : 1,
-          },
-        };
-      })
-      .filter(Boolean);
-  }, [visibleEdges, childrenOf]);
+      return {
+        id: e.id,
+        source: e.source,
+        target: e.target,
+        animated: isHighlightedEdge,
+        type: "smoothstep",
+        style: {
+          stroke: isContains
+            ? "#1e3a5a"
+            : isHighlightedEdge
+            ? "#f59e0b"
+            : isFlow
+            ? "#3b82f6"
+            : "#2a3f5a",
+          strokeDasharray: isContains ? "5 4" : undefined,
+          strokeWidth: isHighlightedEdge ? 2.5 : isFlow ? 1.5 : 1,
+          opacity: isContains ? 0.5 : 0.8,
+        },
+      };
+    }).filter(Boolean);
+  }, [visibleEdges, childrenOf, highlight]);
 
-  // Run dagre on every node/edge change
+  // Run dagre
   const positioned = useMemo(
     () => dagreLayout(Object.values(visibleNodes), rfEdges),
     [visibleNodes, rfEdges],
   );
 
+  // Build RF nodes with custom types
   const rfNodes = useMemo(() => {
     const hl = new Set(highlight);
     return positioned.map((n) => {
-      const style       = getDepthStyle(n.depth);
+      const isFile      = n.kind === "file" || n.kind === "module";
+      const isSelected  = n.id === selectedId;
       const isHighlighted = hl.has(n.id);
       const isExpanded  = !!expanded[n.id];
-      const isLarge     = n.kind === "module" || n.kind === "file";
+
       return {
         id: n.id,
-        data: { label: n.label, raw: n },
+        type: isFile ? "fileNode" : "functionNode",
         position: n.position,
-        style: {
-          padding:      "12px 16px",
-          borderRadius: 10,
-          border:       `${isHighlighted ? 3 : 2}px solid ${isHighlighted ? "#f59e0b" : style.border}`,
-          background:   style.bg,
-          color:        style.fg,
-          fontSize:     isLarge ? 16 : 13,
-          fontWeight:   isLarge ? 700 : 500,
-          minWidth:     isLarge ? 200 : 150,
-          maxWidth:     280,
-          textAlign:    "center",
-          cursor:       "pointer",
-          boxShadow:    isExpanded ? "0 0 0 2px rgba(59,130,246,0.45)" : "none",
+        data: {
+          label:       n.label,
+          filePath:    isFile ? n.file_path || n.description : null,
+          fnCount:     n.function_count ?? 0,
+          kind:        n.type || n.kind,
+          isExpanded,
+          isHighlighted,
+          isSelected,
+          hasCallees:  (childrenOf[n.id]?.length ?? 0) === 0 && !isExpanded,
+          raw: n,
         },
       };
     });
-  }, [positioned, highlight, expanded]);
+  }, [positioned, highlight, expanded, selectedId, childrenOf]);
 
-  // Sync RF state in one batch
   useEffect(() => {
     setNodes(rfNodes);
     setEdges(rfEdges);
   }, [rfNodes, rfEdges, setNodes, setEdges]);
 
-  // Auto-fit when node count changes
   useEffect(() => {
     const count = rfNodes.length;
-    if (count === 0 || count === prevNodeCountRef.current) return;
-    prevNodeCountRef.current = count;
-    const id = setTimeout(() => fitView({ padding: 0.15, duration: 400 }), 50);
+    if (count === 0 || count === prevCountRef.current) return;
+    prevCountRef.current = count;
+    const id = setTimeout(() => fitView({ padding: 0.12, duration: 350 }), 60);
     return () => clearTimeout(id);
   }, [rfNodes, fitView]);
 
-  const selectedNode = selectedId ? visibleNodes[selectedId] : null;
+  const isEmpty = Object.keys(visibleNodes).length === 0;
 
   return (
     <div className="w-full h-full relative">
+      {isEmpty && <EmptyState />}
       <ReactFlow
         nodes={nodes}
         edges={edges}
+        nodeTypes={nodeTypes}
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
         onNodeClick={(_, node) => {
@@ -208,46 +333,23 @@ function GraphViewInner() {
         elementsSelectable
         panOnDrag
         zoomOnScroll
+        minZoom={0.1}
+        maxZoom={2}
       >
-        <Background gap={28} color="#1e293b" />
-        <Controls className="!bg-slate-900 !border-slate-700" />
-        <MiniMap pannable zoomable maskColor="rgba(2,6,23,0.85)" />
-
-        {selectedNode && (
-          <NodeToolbar
-            nodeId={selectedNode.id}
-            isVisible
-            position={Position.Right}
-            offset={12}
-          >
-            <div className="bg-slate-900 border border-slate-700 rounded-lg shadow-xl p-3 max-w-xs text-slate-100">
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <div className="text-xs uppercase tracking-wide text-slate-400">{selectedNode.kind}</div>
-                  <div className="font-semibold mt-0.5">{selectedNode.label}</div>
-                </div>
-                <button
-                  onClick={(e) => { e.stopPropagation(); clearSelection(); }}
-                  className="text-slate-500 hover:text-slate-200 text-sm leading-none"
-                  aria-label="close"
-                >×</button>
-              </div>
-              {selectedNode.description && (
-                <p className="text-xs text-slate-300 mt-2 whitespace-pre-wrap">
-                  {selectedNode.description}
-                </p>
-              )}
-              {selectedNode.file_path && (
-                <div className="text-[11px] text-slate-500 mt-2 break-all">{selectedNode.file_path}</div>
-              )}
-              {selectedNode.function_count != null && (
-                <div className="text-[11px] text-slate-500 mt-1">
-                  {selectedNode.function_count} symbols · click to {expanded[selectedNode.id] ? "collapse" : "expand"}
-                </div>
-              )}
-            </div>
-          </NodeToolbar>
-        )}
+        <Background
+          variant={BackgroundVariant.Dots}
+          gap={24}
+          size={1}
+          color="#1a2540"
+        />
+        <Controls position="bottom-left" showInteractive={false} />
+        <MiniMap
+          pannable
+          zoomable
+          nodeColor={(n) => n.type === "fileNode" ? "#1e3a8a" : "#312e81"}
+          maskColor="rgba(7,9,15,0.85)"
+          style={{ borderRadius: 10 }}
+        />
       </ReactFlow>
     </div>
   );
