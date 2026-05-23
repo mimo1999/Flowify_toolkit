@@ -225,11 +225,24 @@ def _entry_function_hint(file_path: str, fids: List[str], function_nodes_by_id: 
     return candidates[0][1]
 
 
+def _is_test_file(file_path: str) -> bool:
+    """Return True for test files that should never be picked as entry points."""
+    parts = file_path.replace("\\", "/").split("/")
+    filename = parts[-1]
+    return (
+        filename.startswith("test_")
+        or filename.endswith("_test.py")
+        or any(p in {"tests", "test", "spec", "__tests__"} for p in parts[:-1])
+    )
+
+
 def _entry_node(file_path: str, fids: List[str], function_nodes_by_id: Dict[str, dict], source: str, score: float) -> dict:
     symbol_hint = _entry_function_hint(file_path, fids, function_nodes_by_id)
     module_name = _file_to_module(file_path)
     filename = file_path.split("/")[-1]
-    entry_name = module_name if source == "declared" or symbol_hint is None or filename in {"main.py", "ml_main.py", "__main__.py"} else f"{module_name}.{symbol_hint.split('.')[-1]}"
+    # Use a short human-readable label: just the stem (no extension, no dotted path)
+    stem = filename[:-3] if filename.endswith(".py") else filename
+    entry_name = stem
     return {
         "id": f"file::{file_path}",
         "label": entry_name,
@@ -279,18 +292,32 @@ def find_entry_files(
     for fp in known_files:
         files.setdefault(fp, [])
 
-    declared_nodes = [
-        _entry_node(fp, files.get(fp, []), function_nodes_by_id, "declared", 999.0)
-        for fp, original in declared_pairs
-        if (fp in known_files or fp in files)
-        and fp.split("/")[-1] not in _ENTRY_FILE_PENALTY
-        and (
-            not original.replace("\\", "/").endswith(".py")
-            or _ENTRY_NAME_BOOST.get(fp.split("/")[-1], 0) > 0
-        )
-    ]
-    if declared_nodes:
-        return declared_nodes[:max_count]
+    # Score each declared entry so that well-known entry filenames (main.py, app.py…)
+    # float to the top regardless of the order they appear in repo_context.
+    declared_scored = []
+    for fp, original in declared_pairs:
+        if fp not in known_files and fp not in files:
+            continue
+        filename = fp.split("/")[-1]
+        if filename in _ENTRY_FILE_PENALTY:
+            continue
+        if _is_test_file(fp):
+            continue
+        boost = _ENTRY_NAME_BOOST.get(filename, 0)
+        declared_scored.append((boost, fp, original))
+    # Sort: higher boost first, then alphabetically for stability
+    declared_scored.sort(key=lambda t: (-t[0], t[1]))
+    # Only trust the declared list when at least one entry is a well-known entry
+    # filename (main.py, app.py …).  A stub LLM may produce a list of random
+    # module names with boost=0; in that case fall through to structural analysis.
+    has_known_entry = any(boost > 0 for boost, _, _ in declared_scored)
+    if has_known_entry:
+        declared_nodes = [
+            _entry_node(fp, files.get(fp, []), function_nodes_by_id, "declared", 999.0)
+            for _, fp, _ in declared_scored
+        ]
+        if declared_nodes:
+            return declared_nodes[:max_count]
 
     # File-level call graph: count inter-file CALLS edges.
     in_deg: Dict[str, int] = defaultdict(int)
@@ -308,6 +335,8 @@ def find_entry_files(
     scored = []
     for fp, fids in files.items():
         filename = fp.split("/")[-1]
+        if _is_test_file(fp):
+            continue
         score = 0.0
         score += _ENTRY_NAME_BOOST.get(filename, 0)
         if filename in _ENTRY_FILE_PENALTY:
@@ -401,10 +430,13 @@ def expand_file_node(
     children: List[dict] = []
     edges: List[dict] = []
 
+    # Cap: never return more than this many children to keep the canvas readable.
+    _MAX_CHILDREN = 12
+
     if action == "functions":
         fids = [fid for fid, f in function_nodes_by_id.items() if f.get("file_path") == file_path]
         children, edges = _emit_symbol_children(node_id, fids, function_nodes_by_id, function_edges)
-        return {"parent_id": node_id, "children": children, "edges": edges}
+        return {"parent_id": node_id, "children": children[:_MAX_CHILDREN], "edges": edges}
 
     # action == "callees": show files this file calls (file-level CALLS aggregation).
     func_to_file = {fid: f.get("file_path", "") for fid, f in function_nodes_by_id.items()}
@@ -422,7 +454,7 @@ def expand_file_node(
         if sf == file_path and tf and tf != file_path:
             callee_files[tf] += 1
 
-    for tf, _ in sorted(callee_files.items(), key=lambda kv: (-kv[1], kv[0])):
+    for tf, _ in sorted(callee_files.items(), key=lambda kv: (-kv[1], kv[0]))[:_MAX_CHILDREN]:
         tid = f"file::{tf}"
         children.append({
             "id": tid, "label": tf.split("/")[-1], "kind": "file",

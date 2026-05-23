@@ -28,6 +28,26 @@ def root():
     return {"service": "flowify", "graphs": storage.list_graphs()}
 
 
+@app.get("/provider_info")
+def provider_info():
+    """Return the active LLM provider so the UI can show a stub warning."""
+    from . import llm_provider
+    p = llm_provider.get_provider()
+    name = type(p).__name__.replace("Provider", "").lower()
+    return {
+        "provider": name,
+        "is_stub": name == "heuristic",
+        "display_name": {
+            "heuristic": "No LLM (stub mode)",
+            "bob":       "IBM watsonx / Bob",
+            "anthropic": "Anthropic Claude",
+            "openai":    "OpenAI",
+            "copilot":   "GitHub Copilot",
+            "openclaw":  "OpenClaw",
+        }.get(name, name),
+    }
+
+
 def _generate_repo_id(repo_path: str, custom_id: str | None = None) -> str:
     """Generate stable repo_id from path or use custom ID."""
     if custom_id:
