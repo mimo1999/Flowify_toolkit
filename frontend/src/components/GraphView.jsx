@@ -245,18 +245,6 @@ function GraphViewInner() {
                   {selectedNode.function_count} symbols · click to {expanded[selectedNode.id] ? "collapse" : "expand"}
                 </div>
               )}
-              {selectedNode.kind === "file" && (
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    if (expanded[selectedNode.id]) toggleExpand(selectedNode.id);
-                    toggleExpand(selectedNode.id, { action: "functions" });
-                  }}
-                  className="mt-2 text-xs bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded px-2 py-1 w-full"
-                >
-                  Drill into functions
-                </button>
-              )}
             </div>
           </NodeToolbar>
         )}

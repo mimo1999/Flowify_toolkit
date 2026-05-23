@@ -7,20 +7,21 @@ export const useFlowStore = create((set, get) => ({
   repoPath: "",
 
   // Visible graph state — built up incrementally via expand/collapse.
-  nodes: {},                  // id -> node
-  edges: {},                  // id -> edge
-  expanded: {},               // node_id -> [child_id, ...]  (for collapse)
-  rootIds: [],                // ids of the entry-point nodes (root level)
+  nodes: {},          // id -> node
+  edges: {},          // id -> edge
+  expanded: {},       // node_id -> [child_id, ...]  (for collapse)
+  rootIds: [],        // ids of the entry-point nodes (root level)
 
-  selectedId: null,           // id of node showing description bubble
+  selectedId: null,
   highlightPath: [],
   explanation: "",
   queryId: null,
+  queryNodes: [],     // relevant nodes from the last query (for results panel)
   loading: false,
   error: "",
-  
-  // Navigation history for breadcrumb trail
-  viewHistory: [],            // stack of {nodes, edges, expanded, label}
+
+  // Navigation history
+  viewHistory: [],    // stack of {nodes, edges, expanded, label}
 
   setRepoPath: (repoPath) => set({ repoPath }),
 
@@ -36,7 +37,10 @@ export const useFlowStore = create((set, get) => ({
       });
       if (!r.ok) throw new Error(await r.text());
       const { graph_id } = await r.json();
-      set({ graphId: graph_id, nodes: {}, edges: {}, expanded: {}, rootIds: [], selectedId: null });
+      set({
+        graphId: graph_id, nodes: {}, edges: {}, expanded: {},
+        rootIds: [], selectedId: null, explanation: "", queryNodes: [],
+      });
       await get().loadInitial();
     } catch (e) {
       set({ error: String(e) });
@@ -57,196 +61,96 @@ export const useFlowStore = create((set, get) => ({
     (g.edges || []).forEach((e) => {
       if (nodes[e.source] && nodes[e.target]) edges[e.id] = e;
     });
-    set({
-      nodes, edges,
-      expanded: {},
-      rootIds: g.nodes.map((n) => n.id),
-      selectedId: null,
-    });
+    set({ nodes, edges, expanded: {}, rootIds: g.nodes.map((n) => n.id), selectedId: null });
   },
 
   selectNode: (id) => set({ selectedId: id }),
   clearSelection: () => set({ selectedId: null }),
+  clearQuery: () => set({ explanation: "", queryNodes: [], highlightPath: [], queryId: null }),
 
-  toggleExpand: async (nodeId, options = {}) => {
+  toggleExpand: async (nodeId) => {
     const { graphId, expanded, nodes, edges, rootIds } = get();
     if (!graphId || !nodes[nodeId]) return;
 
-    // Collect all node IDs in the subtree rooted at `id` (excluding `id` itself).
-    const collectDescendants = (newExpanded, id, out = new Set()) => {
-      for (const k of (newExpanded[id] || [])) {
-        out.add(k);
-        collectDescendants(newExpanded, k, out);
-      }
+    // ── helpers ──────────────────────────────────────────────────────────────
+    const collectDescendants = (exp, id, out = new Set()) => {
+      for (const k of (exp[id] || [])) { out.add(k); collectDescendants(exp, k, out); }
       return out;
     };
 
-    const removeSubtreeFrom = (newNodes, newEdges, newExpanded, id, keepSelf) => {
-      const removed = collectDescendants(newExpanded, id);
-      // Delete descendant nodes and their expanded entries
-      for (const k of removed) {
-        delete newNodes[k];
-        delete newExpanded[k];
-      }
-      delete newExpanded[id];
-      if (!keepSelf) removed.add(id), delete newNodes[id];
-
-      // Single edge sweep over all removed nodes
-      for (const eid of Object.keys(newEdges)) {
-        const e = newEdges[eid];
-        if (removed.has(e.source) || removed.has(e.target)) delete newEdges[eid];
+    const removeSubtree = (nn, ne, nexp, id, keepSelf) => {
+      const removed = collectDescendants(nexp, id);
+      for (const k of removed) { delete nn[k]; delete nexp[k]; }
+      delete nexp[id];
+      if (!keepSelf) { removed.add(id); delete nn[id]; }
+      for (const eid of Object.keys(ne)) {
+        const e = ne[eid];
+        if (removed.has(e.source) || removed.has(e.target)) delete ne[eid];
       }
     };
 
-    // Already expanded → collapse this subtree.
+    // ── collapse ──────────────────────────────────────────────────────────────
     if (expanded[nodeId]) {
-      const newNodes = { ...nodes };
-      const newEdges = { ...edges };
-      const newExpanded = { ...expanded };
-      removeSubtreeFrom(newNodes, newEdges, newExpanded, nodeId, true);
-      set({ nodes: newNodes, edges: newEdges, expanded: newExpanded });
+      const nn = { ...nodes }, ne = { ...edges }, nexp = { ...expanded };
+      removeSubtree(nn, ne, nexp, nodeId, true);
+      set({ nodes: nn, edges: ne, expanded: nexp });
       return;
     }
 
-    // Build mutable copies to modify before saving.
-    let newNodes = { ...nodes };
-    let newEdges = { ...edges };
-    let newExpanded = { ...expanded };
+    // ── expand ────────────────────────────────────────────────────────────────
+    let nn = { ...nodes }, ne = { ...edges }, nexp = { ...expanded };
 
-    // Rule: if expanding a ROOT node, collapse every other root's subtree first
-    // (but keep the root nodes themselves visible).
-    const rootIdSet = new Set(rootIds);
-    const isRoot = rootIdSet.has(nodeId);
-    if (isRoot) {
+    // Collapse siblings when expanding a root node
+    if (new Set(rootIds).has(nodeId)) {
       for (const rid of rootIds) {
-        if (rid !== nodeId && newExpanded[rid]) {
-          removeSubtreeFrom(newNodes, newEdges, newExpanded, rid, true);
-        }
+        if (rid !== nodeId && nexp[rid]) removeSubtree(nn, ne, nexp, rid, true);
       }
     }
 
-    // Expand: fetch children and merge.
-    const action = options.action || "callees";
-    
-    // Save current state to history before drilling into functions (level 3)
+    // Choose action:
+    //   file node  → show its functions directly (2-level hierarchy)
+    //   everything else → show its callees (function → called functions)
+    const node = nodes[nodeId];
+    const action = node.kind === "file" ? "functions" : "callees";
+
+    // Save view state to history when going into a file's functions
     if (action === "functions") {
-      const currentState = {
-        nodes: { ...nodes },
-        edges: { ...edges },
-        expanded: { ...expanded },
-        label: `Before drilling into ${nodes[nodeId].label}`,
-      };
-      set({ viewHistory: [...get().viewHistory, currentState] });
+      set({ viewHistory: [...get().viewHistory, {
+        nodes: { ...nodes }, edges: { ...edges }, expanded: { ...expanded },
+        label: `Before ${node.label}`,
+      }]});
     }
-    
+
     const url = `${API}/expand?graph_id=${graphId}&node_id=${encodeURIComponent(nodeId)}&action=${action}`;
     const r = await fetch(url);
     if (!r.ok) { set({ error: await r.text() }); return; }
     const data = await r.json();
-    
-    // Focus mode: When drilling into functions (depth 3), apply filtering BEFORE adding children
-    if (action === "functions") {
-      // Build ancestry chain for the node being expanded (using current nodes state)
-      const getAncestors = (id, nodeMap) => {
-        const ancestors = [id];
-        let current = nodeMap[id];
-        while (current && current.parent && nodeMap[current.parent]) {
-          ancestors.unshift(current.parent);
-          current = nodeMap[current.parent];
-        }
-        return ancestors;
-      };
-      
-      const ancestryChain = new Set(getAncestors(nodeId, newNodes));
-      
-      // Filter existing nodes to keep only ancestry chain
-      const focusedNodes = {};
-      for (const nid of ancestryChain) {
-        if (newNodes[nid]) {
-          focusedNodes[nid] = newNodes[nid];
-        }
-      }
-      
-      // Now add the new children
-      const childIds = [];
-      for (const c of data.children) {
-        focusedNodes[c.id] = c;
-        childIds.push(c.id);
-      }
-      
-      // Build nodesToKeep set for edge filtering
-      const nodesToKeep = new Set([...ancestryChain, ...childIds]);
-      
-      // Filter edges to keep only those between kept nodes
-      const focusedEdges = {};
-      for (const e of data.edges) {
-        if (nodesToKeep.has(e.source) && nodesToKeep.has(e.target)) {
-          focusedEdges[e.id] = e;
-        }
-      }
-      
-      // Also keep existing edges between ancestry nodes
-      for (const eid of Object.keys(newEdges)) {
-        const e = newEdges[eid];
-        if (nodesToKeep.has(e.source) && nodesToKeep.has(e.target)) {
-          focusedEdges[eid] = e;
-        }
-      }
-      
-      // Filter expanded state
-      const focusedExpanded = {};
-      for (const nid of nodesToKeep) {
-        if (newExpanded[nid]) {
-          focusedExpanded[nid] = newExpanded[nid].filter(cid => nodesToKeep.has(cid));
-        }
-      }
-      focusedExpanded[nodeId] = childIds;
-      
-      newNodes = focusedNodes;
-      newEdges = focusedEdges;
-      newExpanded = focusedExpanded;
-    } else {
-      // Normal expansion (not functions)
-      const childIds = [];
-      for (const c of data.children) {
-        newNodes[c.id] = c;
-        childIds.push(c.id);
-      }
-      for (const e of data.edges) {
-        if (newNodes[e.source] && newNodes[e.target]) {
-          newEdges[e.id] = e;
-        }
-      }
-      newExpanded[nodeId] = childIds;
+
+    const childIds = [];
+    for (const c of data.children) {
+      nn[c.id] = c;
+      childIds.push(c.id);
     }
-    
-    set({ nodes: newNodes, edges: newEdges, expanded: newExpanded });
+    for (const e of data.edges) {
+      if (nn[e.source] && nn[e.target]) ne[e.id] = e;
+    }
+    nexp[nodeId] = childIds;
+
+    set({ nodes: nn, edges: ne, expanded: nexp });
   },
-  
+
   goBack: () => {
     const { viewHistory } = get();
     if (viewHistory.length === 0) return;
-    
-    const previousState = viewHistory[viewHistory.length - 1];
-    const newHistory = viewHistory.slice(0, -1);
-    
+    const prev = viewHistory[viewHistory.length - 1];
     set({
-      nodes: previousState.nodes,
-      edges: previousState.edges,
-      expanded: previousState.expanded,
-      viewHistory: newHistory,
-      selectedId: null,
+      nodes: prev.nodes, edges: prev.edges, expanded: prev.expanded,
+      viewHistory: viewHistory.slice(0, -1), selectedId: null,
     });
   },
-  
+
   resetView: async () => {
-    set({
-      nodes: {},
-      edges: {},
-      expanded: {},
-      viewHistory: [],
-      selectedId: null,
-    });
+    set({ nodes: {}, edges: {}, expanded: {}, viewHistory: [], selectedId: null });
     await get().loadInitial();
   },
 
@@ -262,7 +166,12 @@ export const useFlowStore = create((set, get) => ({
       });
       if (!r.ok) throw new Error(await r.text());
       const data = await r.json();
-      set({ explanation: data.explanation, highlightPath: data.path, queryId: data.query_id ?? null });
+      set({
+        explanation: data.explanation,
+        highlightPath: data.path,
+        queryId: data.query_id ?? null,
+        queryNodes: data.subgraph?.nodes ?? [],
+      });
     } catch (e) {
       set({ error: String(e) });
     } finally {
