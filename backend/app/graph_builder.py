@@ -580,6 +580,17 @@ def build_function_graph(repo_path: str) -> Tuple[nx.DiGraph, List[FunctionNode]
 
     all_nodes.extend(external_nodes.values())
 
+    # Deduplicate edges: the regex extractor fires once per call-site occurrence,
+    # so a function that calls foo() in two branches produces two identical edges.
+    seen_edge_keys: set = set()
+    deduped: List[FunctionEdge] = []
+    for e in resolved:
+        key = (e.source_id, e.target_id, e.type)
+        if key not in seen_edge_keys:
+            seen_edge_keys.add(key)
+            deduped.append(e)
+    resolved = deduped
+
     g = nx.DiGraph()
     for n in all_nodes:
         g.add_node(n.id, **n.model_dump())
