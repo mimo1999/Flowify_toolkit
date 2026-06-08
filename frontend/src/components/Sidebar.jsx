@@ -65,6 +65,58 @@ function LegendItem({ children, color, dashed }) {
   );
 }
 
+// ── Depth selector ────────────────────────────────────────────────────────────
+function DepthSelector({ graphId }) {
+  const currentDepth  = useFlowStore((s) => s.currentDepth);
+  const loadDepthView = useFlowStore((s) => s.loadDepthView);
+  const resetView     = useFlowStore((s) => s.resetView);
+
+  const levels = [
+    { depth: 1, label: "Modules",   icon: "📦" },
+    { depth: 2, label: "Files",     icon: "📄" },
+    { depth: 3, label: "Functions", icon: "⚙️" },
+  ];
+
+  if (!graphId) return null;
+
+  return (
+    <div>
+      <div className="text-[10px] uppercase tracking-widest text-slate-500 font-semibold mb-2">
+        Drill-down view
+      </div>
+      <div className="flex gap-1">
+        <button
+          onClick={resetView}
+          title="Interactive explore mode"
+          className={`flex-1 flex flex-col items-center py-1.5 rounded-lg text-[10px] border transition-colors ${
+            currentDepth === null
+              ? "border-blue-500/80 bg-blue-900/30 text-blue-300"
+              : "border-[#1e2d4a] text-slate-500 hover:text-slate-300 hover:border-slate-500"
+          }`}
+        >
+          <span className="text-sm">🔍</span>
+          <span>Explore</span>
+        </button>
+        {levels.map(({ depth, label, icon }) => (
+          <button
+            key={depth}
+            onClick={() => loadDepthView(depth)}
+            title={`View at ${label} level`}
+            className={`flex-1 flex flex-col items-center py-1.5 rounded-lg text-[10px] border transition-colors ${
+              currentDepth === depth
+                ? "border-blue-500/80 bg-blue-900/30 text-blue-300"
+                : "border-[#1e2d4a] text-slate-500 hover:text-slate-300 hover:border-slate-500"
+            }`}
+          >
+            <span className="text-sm">{icon}</span>
+            <span>{label}</span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 export default function Sidebar() {
   const {
@@ -170,6 +222,9 @@ export default function Sidebar() {
           </div>
         )}
 
+        {/* Drill-down view selector */}
+        {graphId && <DepthSelector graphId={graphId} />}
+
         {/* Graph stats */}
         {graphId && (
           <div className="rounded-lg bg-[#0f1629] border border-[#1a2540] p-3 space-y-2">
@@ -185,9 +240,10 @@ export default function Sidebar() {
         <div className="rounded-lg bg-[#0f1629] border border-[#1a2540] p-3">
           <div className="text-[10px] uppercase tracking-widest text-slate-600 font-semibold mb-3">Legend</div>
           <div className="space-y-2">
+            <div className="text-[9px] uppercase tracking-widest text-slate-700 font-semibold mt-1">Nodes</div>
             <div className="flex items-center gap-2.5">
               <span className="w-6 h-4 rounded shrink-0 bg-gradient-to-br from-blue-950 to-blue-900 border border-blue-800/60" />
-              <span className="text-slate-500 text-xs">File node</span>
+              <span className="text-slate-500 text-xs">File</span>
             </div>
             <div className="flex items-center gap-2.5">
               <span className="w-6 h-4 rounded shrink-0 bg-gradient-to-br from-indigo-950 to-indigo-900 border border-indigo-800/60" />
@@ -198,7 +254,24 @@ export default function Sidebar() {
               <span className="text-slate-500 text-xs">Class</span>
             </div>
             <div className="my-1 border-t border-[#1a2540]" />
-            <LegendItem color="#3b82f6">Calls edge</LegendItem>
+            <div className="text-[9px] uppercase tracking-widest text-slate-700 font-semibold">Semantic roles</div>
+            {[
+              { icon: "🔌", color: "#10b981", label: "API endpoint (EXPOSES_API)" },
+              { icon: "🗄️",  color: "#8b5cf6", label: "Database access (USES_DB)" },
+              { icon: "📤", color: "#f59e0b", label: "Event emitter (EMITS_EVENT)" },
+              { icon: "📥", color: "#ef4444", label: "Event consumer (CONSUMES_EVENT)" },
+            ].map(({ icon, color, label }) => (
+              <div key={label} className="flex items-center gap-2.5">
+                <span className="text-sm w-6 shrink-0 text-center">{icon}</span>
+                <span className="text-slate-500 text-[10px]">{label}</span>
+              </div>
+            ))}
+            <div className="my-1 border-t border-[#1a2540]" />
+            <div className="text-[9px] uppercase tracking-widest text-slate-700 font-semibold">Edges</div>
+            <LegendItem color="#3b82f6">Calls</LegendItem>
+            <LegendItem color="#8b5cf6">→ DB layer</LegendItem>
+            <LegendItem color="#10b981">→ API layer</LegendItem>
+            <LegendItem color="#f59e0b">→ Event emit</LegendItem>
             <LegendItem color="#1e3a5a" dashed>Contains</LegendItem>
           </div>
         </div>

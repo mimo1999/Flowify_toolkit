@@ -17,12 +17,84 @@ const FnIcon = () => (
   </svg>
 );
 
+const SEMANTIC_COLORS = {
+  EXPOSES_API:    "#10b981",
+  USES_DB:        "#8b5cf6",
+  EMITS_EVENT:    "#f59e0b",
+  CONSUMES_EVENT: "#ef4444",
+  CALLS:          "#3b82f6",
+};
+const SEMANTIC_ICONS = {
+  EXPOSES_API: "🔌", USES_DB: "🗄️", EMITS_EVENT: "📤",
+  CONSUMES_EVENT: "📥", CALLS: "⚙️",
+};
+
+function ExecutionPath({ steps }) {
+  if (!steps || steps.length === 0) return null;
+  return (
+    <div className="px-5 py-4 border-b border-[#1a2540]">
+      <div className="text-[10px] uppercase tracking-widest text-slate-600 font-semibold mb-3">
+        Execution path
+      </div>
+      <div className="space-y-0">
+        {steps.slice(0, 12).map((step, i) => {
+          const color = SEMANTIC_COLORS[step.semantic_kind] || "#3b82f6";
+          const icon  = SEMANTIC_ICONS[step.semantic_kind] || "⚙️";
+          return (
+            <div key={step.id}>
+              <div
+                className="rounded-lg border px-3 py-2 text-xs fade-in"
+                style={{
+                  borderColor: `${color}40`,
+                  background: `${color}0a`,
+                  animationDelay: `${i * 40}ms`,
+                }}
+              >
+                <div className="flex items-center gap-1.5">
+                  <span style={{ color }}>{icon}</span>
+                  <span className="font-mono text-white/90 truncate flex-1">{step.name}</span>
+                  {step.semantic_kind !== "CALLS" && (
+                    <span
+                      className="text-[8px] font-bold px-1.5 py-0.5 rounded shrink-0"
+                      style={{ background: `${color}22`, color }}
+                    >
+                      {step.semantic_kind.replace("_", " ")}
+                    </span>
+                  )}
+                </div>
+                <div className="text-[10px] text-slate-500 truncate mt-0.5 pl-5">
+                  {step.file_path?.split("/").slice(-2).join("/")}
+                </div>
+                {step.summary && !step.summary.startsWith("(stub)") && (
+                  <div className="text-[10px] text-slate-400 mt-1 pl-5 line-clamp-1">
+                    {step.summary}
+                  </div>
+                )}
+              </div>
+              {i < steps.slice(0, 12).length - 1 && (
+                <div className="flex items-center justify-start pl-[22px] my-0.5">
+                  <div className="w-px h-3 bg-slate-700" />
+                  <span className="text-[8px] text-slate-600 ml-1">
+                    {step.edge_label && step.edge_label !== "CALLS" ? step.edge_label : "↓"}
+                  </span>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 export default function QueryResults() {
-  const explanation  = useFlowStore((s) => s.explanation);
-  const queryNodes   = useFlowStore((s) => s.queryNodes);
-  const queryId      = useFlowStore((s) => s.queryId);
-  const clearQuery   = useFlowStore((s) => s.clearQuery);
-  const sendFeedback = useFlowStore((s) => s.sendFeedback);
+  const explanation        = useFlowStore((s) => s.explanation);
+  const queryNodes         = useFlowStore((s) => s.queryNodes);
+  const queryId            = useFlowStore((s) => s.queryId);
+  const executionSteps     = useFlowStore((s) => s.executionSteps);
+  const graphNodesConsulted = useFlowStore((s) => s.graphNodesConsulted);
+  const clearQuery         = useFlowStore((s) => s.clearQuery);
+  const sendFeedback       = useFlowStore((s) => s.sendFeedback);
 
   const [copied,   setCopied]   = useState(false);
   const [feedback, setFeedback] = useState(null);
@@ -64,8 +136,11 @@ export default function QueryResults() {
       <div className="flex items-center justify-between px-5 py-4 border-b border-[#1a2540] shrink-0">
         <div>
           <div className="text-xs font-semibold text-white">Query results</div>
-          {visibleNodes.length > 0 && (
-            <div className="text-[10px] text-slate-500 mt-0.5">{visibleNodes.length} relevant functions found</div>
+          {graphNodesConsulted > 0 && (
+            <div className="flex items-center gap-1.5 mt-1">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+              <span className="text-[10px] text-emerald-400">Grounded in {graphNodesConsulted} graph nodes</span>
+            </div>
           )}
         </div>
         <button
@@ -87,15 +162,18 @@ export default function QueryResults() {
           </div>
         )}
 
-        {/* Explanation */}
+        {/* Graph-grounded explanation */}
         <div className="px-5 py-4 border-b border-[#1a2540]">
           <div className="text-[10px] uppercase tracking-widest text-slate-600 font-semibold mb-2">
-            Explanation
+            Graph-grounded explanation
           </div>
           <p className="text-sm text-slate-300 leading-relaxed whitespace-pre-wrap">
             {isStub ? explanation.replace(/^\(stub\)\s*/, "") : explanation}
           </p>
         </div>
+
+        {/* Structured execution path */}
+        <ExecutionPath steps={executionSteps} />
 
         {/* Relevant functions */}
         {visibleNodes.length > 0 && (

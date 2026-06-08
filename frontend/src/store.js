@@ -17,11 +17,20 @@ export const useFlowStore = create((set, get) => ({
   explanation: "",
   queryId: null,
   queryNodes: [],     // relevant nodes from the last query (for results panel)
+  executionSteps: [], // structured execution path from last query
+  graphNodesConsulted: 0,
   loading: false,
   error: "",
 
+  // Impact analysis panel
+  impactData: null,
+  impactLoading: false,
+
   // Navigation history
   viewHistory: [],    // stack of {nodes, edges, expanded, label}
+
+  // Current drill-down depth (1=modules, 2=files, 3=functions)
+  currentDepth: null, // null = lazy expand mode, 1/2/3 = depth view
 
   setRepoPath: (repoPath) => set({ repoPath }),
 
@@ -40,6 +49,7 @@ export const useFlowStore = create((set, get) => ({
       set({
         graphId: graph_id, nodes: {}, edges: {}, expanded: {},
         rootIds: [], selectedId: null, explanation: "", queryNodes: [],
+        executionSteps: [], graphNodesConsulted: 0,
       });
       await get().loadInitial();
     } catch (e) {
@@ -64,9 +74,55 @@ export const useFlowStore = create((set, get) => ({
     set({ nodes, edges, expanded: {}, rootIds: g.nodes.map((n) => n.id), selectedId: null });
   },
 
-  selectNode: (id) => set({ selectedId: id }),
-  clearSelection: () => set({ selectedId: null }),
-  clearQuery: () => set({ explanation: "", queryNodes: [], highlightPath: [], queryId: null }),
+  selectNode: (id) => {
+    set({ selectedId: id });
+    // Auto-fetch impact when a function node is selected
+    if (id && !id.startsWith("file::") && !id.startsWith("mod_")) {
+      get().fetchImpact(id);
+    } else {
+      set({ impactData: null });
+    }
+  },
+  clearSelection: () => set({ selectedId: null, impactData: null }),
+  clearQuery: () => set({ explanation: "", queryNodes: [], highlightPath: [], queryId: null, executionSteps: [], graphNodesConsulted: 0 }),
+
+  fetchImpact: async (nodeId) => {
+    const { graphId } = get();
+    if (!graphId || !nodeId) return;
+    set({ impactLoading: true });
+    try {
+      const r = await fetch(`${API}/impact?graph_id=${graphId}&node_id=${encodeURIComponent(nodeId)}`);
+      if (!r.ok) { set({ impactData: null }); return; }
+      set({ impactData: await r.json() });
+    } catch (_) {
+      set({ impactData: null });
+    } finally {
+      set({ impactLoading: false });
+    }
+  },
+
+  // Load graph at a fixed depth (1=modules, 2=files, 3=functions)
+  loadDepthView: async (depth) => {
+    const { graphId } = get();
+    if (!graphId) return;
+    set({ loading: true, error: "", currentDepth: depth });
+    try {
+      const r = await fetch(`${API}/graph?graph_id=${graphId}&depth=${depth}`);
+      if (!r.ok) { set({ error: await r.text() }); return; }
+      const data = await r.json();
+      const nodes = {};
+      const edges = {};
+      (data.nodes || []).forEach((n) => (nodes[n.id] = n));
+      (data.edges || []).forEach((e) => {
+        if (nodes[e.source] && nodes[e.target]) edges[e.id] = e;
+      });
+      set({ nodes, edges, expanded: {}, rootIds: Object.keys(nodes), selectedId: null, viewHistory: [] });
+    } catch (e) {
+      set({ error: String(e) });
+    } finally {
+      set({ loading: false });
+    }
+  },
 
   toggleExpand: async (nodeId) => {
     const { graphId, expanded, nodes, edges, rootIds } = get();
@@ -171,6 +227,8 @@ export const useFlowStore = create((set, get) => ({
         highlightPath: data.path,
         queryId: data.query_id ?? null,
         queryNodes: data.subgraph?.nodes ?? [],
+        executionSteps: data.execution_steps ?? [],
+        graphNodesConsulted: data.graph_nodes_consulted ?? 0,
       });
     } catch (e) {
       set({ error: String(e) });
