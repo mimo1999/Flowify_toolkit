@@ -107,11 +107,8 @@ def mcp_ingest_repo(req: IngestRequest):
         repo_id = _generate_repo_id(req.repo_path, req.repo_id)
         
         # Check if already ingested (idempotent).
-        # list_graphs() returns base IDs and meta suffixes (e.g. "abc.repo_context");
-        # only attempt to load pure graph IDs (no dot in name).
-        existing_graphs = [g for g in storage.list_graphs() if "." not in g]
-        for graph_id in existing_graphs:
-            payload = storage.load(graph_id)
+        for graph_id in storage.list_graphs():
+            payload = storage.load_light(graph_id)
             if payload and payload.repo_path == req.repo_path:
                 logger.info(f"Repository already ingested with graph_id: {graph_id}")
                 repo_context = storage.load_meta(graph_id, "repo_context")
@@ -177,7 +174,7 @@ def build_graph_for_bob(req: BobGraphRequest):
 @app.get("/entry_points")
 def get_entry_points(graph_id: str, max_count: int = 4):
     """Return up to `max_count` inferred entry-point files for the initial view."""
-    payload = storage.load(graph_id)
+    payload = storage.load_light(graph_id)
     if payload is None:
         raise HTTPException(404, "graph not found")
     func_by_id, function_edges = _serialize_payload(payload)
@@ -196,7 +193,7 @@ def expand_graph_node(graph_id: str, node_id: str, action: str = "callees"):
       action=callees   → show files this file calls
       action=functions → drill into the file's symbols
     """
-    payload = storage.load(graph_id)
+    payload = storage.load_light(graph_id)
     if payload is None:
         raise HTTPException(404, "graph not found")
     func_by_id, function_edges = _serialize_payload(payload)
@@ -218,7 +215,7 @@ def get_graph(graph_id: str, depth: int = 1):
     Depth 2: Shows file-level submodules
     Depth 3: Shows individual functions
     """
-    payload = storage.load(graph_id)
+    payload = storage.load_light(graph_id)
     if payload is None:
         raise HTTPException(404, "graph not found")
     depth = max(1, min(3, depth))
@@ -244,7 +241,7 @@ def get_graph(graph_id: str, depth: int = 1):
 @app.post("/query", response_model=QueryResponse)
 def query_graph(req: QueryRequest):
     """Query endpoint — returns graph-grounded explanation + structured execution path."""
-    payload = storage.load(req.graph_id)
+    payload = storage.load_light(req.graph_id)
     if payload is None:
         raise HTTPException(404, "graph not found")
 
@@ -276,7 +273,7 @@ def mcp_query_repo(req: QueryRequest):
         logger.info(f"MCP query request: graph_id={req.graph_id}, query={req.query}")
         
         # Validate graph exists
-        payload = storage.load(req.graph_id)
+        payload = storage.load_light(req.graph_id)
         if payload is None:
             return MCPQueryResponse(
                 success=False,
@@ -344,7 +341,7 @@ def get_impact(graph_id: str, node_id: str):
       - affected_modules: module names that would be impacted
       - risk_level: low / medium / high / critical
     """
-    payload = storage.load(graph_id)
+    payload = storage.load_light(graph_id)
     if payload is None:
         raise HTTPException(404, "graph not found")
 
@@ -508,10 +505,10 @@ def get_repo_context(graph_id: str):
     project type, domain, architecture, tech stack, and purpose.
     """
     # Check if graph exists
-    payload = storage.load(graph_id)
+    payload = storage.load_light(graph_id)
     if payload is None:
         raise HTTPException(404, "graph not found")
-    
+
     # Load repository context
     repo_context = storage.load_meta(graph_id, "repo_context")
     if repo_context is None:
@@ -531,10 +528,10 @@ def get_semantic_analysis(graph_id: str):
     Returns semantic metadata for all functions and semantic edges.
     Phase 2 feature.
     """
-    payload = storage.load(graph_id)
+    payload = storage.load_light(graph_id)
     if payload is None:
         raise HTTPException(404, "graph not found")
-    
+
     # Collect semantic metadata
     functions_with_semantics = []
     for node in payload.function_nodes:
@@ -576,7 +573,7 @@ def get_semantic_analysis(graph_id: str):
 @app.get("/llm_ingestion")
 def get_llm_ingestion(graph_id: str):
     """Get the node-level JSON returned by the LLM ingestion stage."""
-    payload = storage.load(graph_id)
+    payload = storage.load_light(graph_id)
     if payload is None:
         raise HTTPException(404, "graph not found")
     llm_ingestion = storage.load_meta(graph_id, "llm_ingestion")
@@ -588,7 +585,7 @@ def get_llm_ingestion(graph_id: str):
 @app.get("/llm_ingestion_prompt")
 def get_llm_ingestion_prompt(graph_id: str):
     """Get the prompt used for the LLM ingestion stage."""
-    payload = storage.load(graph_id)
+    payload = storage.load_light(graph_id)
     if payload is None:
         raise HTTPException(404, "graph not found")
     prompt_data = storage.load_meta(graph_id, "llm_ingestion_prompt")
@@ -634,7 +631,7 @@ def get_module_details(graph_id: str, module_id: str):
     
     Returns module metadata, entry points, control flow patterns, and function listings.
     """
-    payload = storage.load(graph_id)
+    payload = storage.load_light(graph_id)
     if payload is None:
         raise HTTPException(404, "graph not found")
     
@@ -715,7 +712,7 @@ def get_analytics(graph_id: str):
     
     Returns statistics about queries, helpful rate, learned terms, etc.
     """
-    payload = storage.load(graph_id)
+    payload = storage.load_light(graph_id)
     if payload is None:
         raise HTTPException(404, "graph not found")
     analytics = learning.get_analytics(graph_id)
@@ -725,10 +722,10 @@ def get_analytics(graph_id: str):
 @app.get("/hot_nodes")
 def get_hot_nodes(graph_id: str, limit: int = 10):
     """Get most frequently accessed nodes.
-    
+
     Shows which functions are queried most often.
     """
-    payload = storage.load(graph_id)
+    payload = storage.load_light(graph_id)
     if payload is None:
         raise HTTPException(404, "graph not found")
     
@@ -757,10 +754,10 @@ def get_common_paths(graph_id: str, min_frequency: int = 3):
     
     Shows common patterns in how users explore the codebase.
     """
-    payload = storage.load(graph_id)
+    payload = storage.load_light(graph_id)
     if payload is None:
         raise HTTPException(404, "graph not found")
-    
+
     paths = learning.get_common_paths(graph_id, min_frequency)
     
     # Enrich with function names
@@ -793,5 +790,13 @@ def update_node_importance(graph_id: str):
         raise HTTPException(404, "graph not found")
     
     learning.update_node_importance(graph_id)
-    
+
     return {"status": "importance updated", "graph_id": graph_id}
+
+
+@app.delete("/graphs/{graph_id}")
+def delete_graph(graph_id: str):
+    """Permanently delete a stored graph and all its associated data."""
+    if not storage.delete(graph_id):
+        raise HTTPException(404, "graph not found")
+    return {"deleted": graph_id}

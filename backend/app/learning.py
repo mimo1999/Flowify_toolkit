@@ -89,7 +89,7 @@ def record_query(
     terms = _extract_terms(query)
     if terms:
         # Load payload once and build a node-id → name index for O(1) lookups.
-        payload = storage.load(graph_id)
+        payload = storage.load_light(graph_id)
         name_by_id: Dict[str, str] = {}
         if payload:
             name_by_id = {n.id: n.name for n in payload.function_nodes}

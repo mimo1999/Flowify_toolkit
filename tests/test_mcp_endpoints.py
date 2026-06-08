@@ -96,7 +96,7 @@ class TestMCPIngestEndpoint:
         existing_payload.module_nodes = [Mock() for _ in range(2)]
         
         mock_storage.list_graphs.return_value = ["existing-graph-456"]
-        mock_storage.load.return_value = existing_payload
+        mock_storage.load_light.return_value = existing_payload
         mock_storage.load_meta.return_value = {"project_type": "library"}
         
         # Make request
@@ -207,7 +207,7 @@ class TestMCPQueryEndpoint:
         
         mock_payload.function_nodes = [mock_func1, mock_func2]
         
-        mock_storage.load.return_value = mock_payload
+        mock_storage.load_light.return_value = mock_payload
         import networkx as nx
         mock_retrieval.retrieve_subgraph.return_value = (
             ["func1", "func2"],
@@ -245,7 +245,7 @@ class TestMCPQueryEndpoint:
     
     def test_query_graph_not_found(self, client, mock_storage):
         """Test query when graph doesn't exist."""
-        mock_storage.load.return_value = None
+        mock_storage.load_light.return_value = None
         
         response = client.post(
             "/mcp/query",
@@ -264,11 +264,11 @@ class TestMCPQueryEndpoint:
         """Test depth parameter validation."""
         mock_payload = Mock()
         mock_payload.function_nodes = []
-        mock_storage.load.return_value = mock_payload
+        mock_storage.load_light.return_value = mock_payload
         import networkx as nx
         mock_retrieval.retrieve_subgraph.return_value = ([], {}, "qid", nx.DiGraph())
         mock_retrieval.explain.return_value = "No results"
-        
+
         # Test valid depth
         response = client.post(
             "/mcp/query",
@@ -322,7 +322,7 @@ class TestMCPQueryEndpoint:
         # (Nested function definitions cause graph-builder edge source issues in test_self_graph.)
         mock_payload.function_nodes = [_make_func_node(i) for i in range(30)]
         
-        mock_storage.load.return_value = mock_payload
+        mock_storage.load_light.return_value = mock_payload
         import networkx as nx
         mock_retrieval.retrieve_subgraph.return_value = (
             [f"func{i}" for i in range(30)],
