@@ -378,7 +378,121 @@ class TestRepoIdGeneration:
         assert len(repo_id1) == 12  # SHA256 truncated to 12 chars
 
 
+class TestListGraphsEndpoint:
+    """Tests for GET /mcp/graphs."""
+
+    def test_list_graphs_empty(self, client, mock_storage):
+        mock_storage.list_graphs.return_value = []
+        response = client.get("/mcp/graphs")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["count"] == 0
+        assert data["graphs"] == []
+
+    def test_list_graphs_with_data(self, client, mock_storage):
+        mock_payload = Mock()
+        mock_payload.repo_path = "/test/repo"
+        mock_payload.function_nodes = [Mock() for _ in range(5)]
+        mock_payload.module_nodes = [Mock() for _ in range(2)]
+
+        mock_storage.list_graphs.return_value = ["abc123"]
+        mock_storage.load_light.return_value = mock_payload
+        mock_storage.load_meta.return_value = {
+            "project_type": "web_api",
+            "architecture": "layered",
+            "purpose": "A test API",
+        }
+
+        response = client.get("/mcp/graphs")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["count"] == 1
+        g = data["graphs"][0]
+        assert g["graph_id"] == "abc123"
+        assert g["repo_path"] == "/test/repo"
+        assert g["function_count"] == 5
+        assert g["module_count"] == 2
+        assert g["project_type"] == "web_api"
+        assert g["purpose"] == "A test API"
+
+    def test_list_graphs_skips_missing_payloads(self, client, mock_storage):
+        mock_storage.list_graphs.return_value = ["abc123", "def456"]
+        mock_storage.load_light.side_effect = [Mock(
+            repo_path="/repo1",
+            function_nodes=[],
+            module_nodes=[],
+        ), None]  # second graph fails to load
+        mock_storage.load_meta.return_value = {}
+        response = client.get("/mcp/graphs")
+        assert response.status_code == 200
+        # Only the successfully loaded graph is included
+        assert response.json()["count"] == 1
+
+
+class TestMCPImpactEndpoint:
+    """Tests for GET /mcp/impact."""
+
+    def _make_node(self, nid, name, file_path="/src/mod.py"):
+        n = Mock()
+        n.id = nid
+        n.name = name
+        n.file_path = file_path
+        n.type = "function"
+        n.semantics = None
+        n.adapter_metadata = {"semantic_kind": "CALLS"}
+        return n
+
+    def test_impact_exact_name_match(self, client, mock_storage):
+        target = self._make_node("n1", "verify_token")
+        mock_payload = Mock()
+        mock_payload.function_nodes = [target, self._make_node("n2", "other_func")]
+        mock_payload.function_edges = []
+        mock_payload.module_nodes = []
+
+        mock_storage.load_light.return_value = mock_payload
+
+        response = client.get("/mcp/impact", params={
+            "graph_id": "g1",
+            "function_name": "verify_token",
+        })
+        assert response.status_code == 200
+        data = response.json()
+        assert data["node_id"] == "n1"
+        assert data["node_name"] == "verify_token"
+
+    def test_impact_case_insensitive(self, client, mock_storage):
+        target = self._make_node("n1", "VerifyToken")
+        mock_payload = Mock()
+        mock_payload.function_nodes = [target]
+        mock_payload.function_edges = []
+        mock_payload.module_nodes = []
+        mock_storage.load_light.return_value = mock_payload
+
+        response = client.get("/mcp/impact", params={
+            "graph_id": "g1",
+            "function_name": "verifytoken",
+        })
+        assert response.status_code == 200
+
+    def test_impact_not_found(self, client, mock_storage):
+        mock_payload = Mock()
+        mock_payload.function_nodes = [self._make_node("n1", "some_func")]
+        mock_storage.load_light.return_value = mock_payload
+
+        response = client.get("/mcp/impact", params={
+            "graph_id": "g1",
+            "function_name": "nonexistent_func",
+        })
+        assert response.status_code == 404
+
+    def test_impact_graph_not_found(self, client, mock_storage):
+        mock_storage.load_light.return_value = None
+        response = client.get("/mcp/impact", params={
+            "graph_id": "missing",
+            "function_name": "foo",
+        })
+        assert response.status_code == 404
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
-
-# Made with Bob

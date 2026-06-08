@@ -1,23 +1,27 @@
 """
-Flowify MCP Server - Thin wrapper around FastAPI endpoints.
+Flowify MCP Server — exposes the full Flowify toolkit to AI coding assistants.
 
-This MCP server exposes two tools:
-1. ingest_repo - Ingest a repository and build its code graph
-2. query_repo - Query the code graph with natural language
+Tools
+-----
+ingest_repo         Ingest a repository and build its call graph.
+query_repo          Natural-language query against an ingested graph.
+list_graphs         List all ingested repositories with metadata.
+get_repo_overview   Full repo context: purpose, architecture, entry points.
+impact_analysis     Change-impact analysis by function name.
+delete_graph        Delete a stored graph and free its storage.
 
-The server acts as a client to the Flowify FastAPI backend.
-
-Features:
-- Circuit breaker for fault tolerance
-- Request deduplication for efficiency
-- Retry logic with exponential backoff
-- Health checking
-- Comprehensive logging
+Resilience features
+-------------------
+- Circuit breaker (fail-fast when backend is down)
+- Retry with exponential back-off (transient errors)
+- Request deduplication (parallel ingest calls de-duped)
+- Per-tool timeout tuning (long timeout for ingest/query, short for reads)
 """
 import asyncio
 import json
 import logging
 from typing import Any
+
 import httpx
 from mcp.server import Server
 from mcp.types import Tool, TextContent
@@ -26,325 +30,564 @@ from .resilience import (
     circuit_breaker,
     request_deduplicator,
     retry_with_backoff,
-    HealthChecker
+    HealthChecker,
 )
 
-# Configure logging with more detail
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger("flowify-mcp")
 
-# Configuration
+# ── Config ──────────────────────────────────────────────────────────────────
 FASTAPI_BASE_URL = "http://localhost:8000"
-REQUEST_TIMEOUT = 120.0  # 2 minutes for ingestion operations
+# LLM-backed operations can take several minutes (Ollama cold start)
+LONG_TIMEOUT  = 420.0   # ingest / query
+SHORT_TIMEOUT =  15.0   # list / overview / delete
 
-# Initialize MCP server and health checker
 app = Server("flowify-mcp")
 health_checker = HealthChecker(FASTAPI_BASE_URL)
 
 
-def create_http_client() -> httpx.AsyncClient:
-    """Create HTTP client with timeout configuration."""
+def _http(timeout: float = LONG_TIMEOUT) -> httpx.AsyncClient:
     return httpx.AsyncClient(
         base_url=FASTAPI_BASE_URL,
-        timeout=httpx.Timeout(REQUEST_TIMEOUT),
-        follow_redirects=True
+        timeout=httpx.Timeout(timeout),
+        follow_redirects=True,
     )
 
 
-async def make_resilient_request(client: httpx.AsyncClient, method: str, url: str, **kwargs) -> httpx.Response:
-    """Make HTTP request with circuit breaker and retry logic."""
-    
-    # Check circuit breaker
+async def _request(
+    method: str,
+    url: str,
+    timeout: float = LONG_TIMEOUT,
+    **kwargs,
+) -> dict:
+    """Circuit-broken, retried HTTP call.  Returns parsed JSON."""
     if not circuit_breaker.can_attempt():
         raise RuntimeError(
-            f"Circuit breaker is OPEN. Service unavailable. "
+            f"Circuit breaker OPEN — backend unavailable. "
             f"State: {circuit_breaker.get_state()}"
         )
-    
-    # Check health
-    if not await health_checker.ensure_healthy(client):
-        logger.warning("Backend health check failed, but attempting request anyway")
-    
-    # Make request with retry
-    async def _request():
-        if method.lower() == "get":
-            return await client.get(url, **kwargs)
-        elif method.lower() == "post":
-            return await client.post(url, **kwargs)
-        else:
-            raise ValueError(f"Unsupported HTTP method: {method}")
-    
+
+    async def _do():
+        async with _http(timeout) as client:
+            if not await health_checker.ensure_healthy(client):
+                logger.warning("Health check failed; attempting anyway")
+            m = method.lower()
+            if m == "get":
+                r = await client.get(url, **kwargs)
+            elif m == "post":
+                r = await client.post(url, **kwargs)
+            elif m == "delete":
+                r = await client.delete(url, **kwargs)
+            else:
+                raise ValueError(f"Unsupported method: {method}")
+            r.raise_for_status()
+            return r.json()
+
     try:
-        response = await retry_with_backoff(
-            _request,
+        data = await retry_with_backoff(
+            _do,
             max_retries=2,
             initial_delay=1.0,
-            exceptions=(httpx.TimeoutException, httpx.ConnectError)
+            exceptions=(httpx.TimeoutException, httpx.ConnectError),
         )
         circuit_breaker.record_success()
-        return response
-    except Exception as e:
+        return data
+    except Exception as exc:
         circuit_breaker.record_failure()
-        logger.error(f"Request failed after retries: {e}")
-        raise
+        raise exc
 
+
+def _text(content: str) -> list[TextContent]:
+    return [TextContent(type="text", text=content)]
+
+
+def _error(msg: str) -> list[TextContent]:
+    return [TextContent(type="text", text=f"✗ {msg}")]
+
+
+# ── Tool registry ────────────────────────────────────────────────────────────
 
 @app.list_tools()
 async def list_tools() -> list[Tool]:
-    """List available MCP tools."""
     return [
         Tool(
             name="ingest_repo",
             description=(
-                "Ingest a code repository and build its function-level call graph. "
-                "This analyzes the repository structure, extracts functions, classes, "
-                "and their relationships. Returns a graph_id for subsequent queries. "
-                "Idempotent - will return existing graph if already ingested."
+                "Analyse a code repository and build a function-level call graph with "
+                "LLM-generated summaries and semantic metadata. Returns a graph_id used "
+                "by all other tools. Idempotent — returns the existing graph if the "
+                "repository has already been ingested."
             ),
             inputSchema={
                 "type": "object",
                 "properties": {
                     "repo_path": {
                         "type": "string",
-                        "description": "Absolute path to the repository root directory"
+                        "description": "Absolute path to the repository root directory.",
                     },
                     "repo_id": {
                         "type": "string",
-                        "description": "Optional stable identifier for the repository"
-                    }
+                        "description": "Optional stable identifier. Auto-generated from the path if omitted.",
+                    },
                 },
-                "required": ["repo_path"]
-            }
+                "required": ["repo_path"],
+            },
         ),
         Tool(
             name="query_repo",
             description=(
-                "Query a code graph using natural language. Returns relevant functions, "
-                "their execution flow, and an explanation of how they relate to the query. "
-                "Use this to understand code flow, find implementations, or explore "
-                "function relationships."
+                "Answer a natural-language question about an ingested codebase using the "
+                "call graph and semantic metadata. Returns an explanation grounded in the "
+                "actual graph, plus a ranked list of relevant functions and their execution "
+                "order. Use this to understand how a feature is implemented, trace data "
+                "flow, or find the functions responsible for a behaviour."
             ),
             inputSchema={
                 "type": "object",
                 "properties": {
                     "graph_id": {
                         "type": "string",
-                        "description": "Graph ID returned from ingest_repo"
+                        "description": "Graph ID from ingest_repo.",
                     },
                     "query": {
                         "type": "string",
-                        "description": "Natural language query about the code (e.g., 'how does authentication work?')"
+                        "description": (
+                            "Natural-language question, e.g. "
+                            "'how does authentication work?' or "
+                            "'where is user data persisted?'"
+                        ),
                     },
                     "depth": {
                         "type": "integer",
-                        "description": "Maximum hops for graph traversal (1-5, default: 2)",
+                        "description": "Call-graph traversal depth (1–5, default 2).",
                         "minimum": 1,
                         "maximum": 5,
-                        "default": 2
-                    }
+                        "default": 2,
+                    },
                 },
-                "required": ["graph_id", "query"]
-            }
-        )
+                "required": ["graph_id", "query"],
+            },
+        ),
+        Tool(
+            name="list_graphs",
+            description=(
+                "List every repository that has been ingested into Flowify. "
+                "Returns graph_id, repo_path, function/module counts, project type, "
+                "and a one-sentence purpose description. "
+                "Call this first to check whether a repository is already available "
+                "before calling ingest_repo."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {},
+            },
+        ),
+        Tool(
+            name="get_repo_overview",
+            description=(
+                "Get a structural overview of an ingested repository: project type, "
+                "tech stack, architecture pattern, high-level purpose, inferred entry "
+                "points, and top-level module breakdown. "
+                "Use this at the start of a session to orient yourself before querying."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "graph_id": {
+                        "type": "string",
+                        "description": "Graph ID from ingest_repo or list_graphs.",
+                    },
+                },
+                "required": ["graph_id"],
+            },
+        ),
+        Tool(
+            name="impact_analysis",
+            description=(
+                "Analyse the change-impact of modifying a specific function. "
+                "Returns its direct callers (who calls it), direct callees (what it calls), "
+                "any database operations it touches, affected modules, downstream node count, "
+                "and a risk level (low / medium / high / critical). "
+                "Use this before refactoring or deleting a function to understand blast radius."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "graph_id": {
+                        "type": "string",
+                        "description": "Graph ID from ingest_repo or list_graphs.",
+                    },
+                    "function_name": {
+                        "type": "string",
+                        "description": (
+                            "Exact function name to analyse. "
+                            "If unsure of the exact name, use query_repo first."
+                        ),
+                    },
+                },
+                "required": ["graph_id", "function_name"],
+            },
+        ),
+        Tool(
+            name="delete_graph",
+            description=(
+                "Permanently delete a stored call graph and all its associated data "
+                "(nodes, edges, metadata, learning history). "
+                "Use this to remove stale graphs or free storage after a major refactor. "
+                "The repository can be re-ingested afterwards."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "graph_id": {
+                        "type": "string",
+                        "description": "Graph ID to delete (from list_graphs).",
+                    },
+                },
+                "required": ["graph_id"],
+            },
+        ),
     ]
 
 
+# ── Tool dispatcher ──────────────────────────────────────────────────────────
+
 @app.call_tool()
 async def call_tool(name: str, arguments: Any) -> list[TextContent]:
-    """Handle tool calls by forwarding to FastAPI backend."""
-    
-    if name == "ingest_repo":
-        return await handle_ingest_repo(arguments)
-    elif name == "query_repo":
-        return await handle_query_repo(arguments)
-    else:
+    dispatch = {
+        "ingest_repo":      _handle_ingest_repo,
+        "query_repo":       _handle_query_repo,
+        "list_graphs":      _handle_list_graphs,
+        "get_repo_overview": _handle_get_repo_overview,
+        "impact_analysis":  _handle_impact_analysis,
+        "delete_graph":     _handle_delete_graph,
+    }
+    handler = dispatch.get(name)
+    if handler is None:
         raise ValueError(f"Unknown tool: {name}")
+    return await handler(arguments or {})
 
 
-async def handle_ingest_repo(arguments: dict[str, Any]) -> list[TextContent]:
-    """Handle ingest_repo tool call with deduplication and resilience."""
+# ── ingest_repo ──────────────────────────────────────────────────────────────
+
+async def _handle_ingest_repo(args: dict) -> list[TextContent]:
+    repo_path = args.get("repo_path", "").strip()
+    repo_id   = args.get("repo_id")
+
+    if not repo_path:
+        return _error("repo_path is required")
+
     try:
-        repo_path = arguments.get("repo_path")
-        repo_id = arguments.get("repo_id")
-        
-        if not repo_path:
-            return [TextContent(
-                type="text",
-                text=json.dumps({
-                    "success": False,
-                    "error": "repo_path is required"
-                }, indent=2)
-            )]
-        
-        logger.info(f"Ingesting repository: {repo_path}")
-        
-        # Use request deduplication for idempotent ingestion
-        async def _ingest():
-            async with create_http_client() as client:
-                response = await make_resilient_request(
-                    client,
-                    "post",
-                    "/mcp/ingest",
-                    json={"repo_path": repo_path, "repo_id": repo_id}
-                )
-                response.raise_for_status()
-                return response.json()
-        
+        async def _do():
+            return await _request(
+                "post", "/mcp/ingest",
+                timeout=LONG_TIMEOUT,
+                json={"repo_path": repo_path, "repo_id": repo_id},
+            )
+
         result = await request_deduplicator.execute(
-            "ingest",
-            _ingest,
+            "ingest", _do,
             repo_path=repo_path,
-            repo_id=repo_id or ""
+            repo_id=repo_id or "",
         )
-        
-        logger.info(f"Ingestion complete: graph_id={result.get('graph_id')}")
-        
-        # Format response for LLM
-        if result.get("success"):
-            summary = (
-                f"✓ Repository ingested successfully\n\n"
-                f"Graph ID: {result['graph_id']}\n"
-                f"Repository: {result['repo_path']}\n"
-                f"Functions: {result['function_count']}\n"
-                f"Modules: {result['module_count']}\n"
-            )
-            
-            # Add repository context if available
-            if result.get("repo_context"):
-                ctx = result["repo_context"]
-                summary += f"\nRepository Type: {ctx.get('project_type', 'unknown')}\n"
-                summary += f"Domain: {ctx.get('domain', 'general')}\n"
-                summary += f"Architecture: {ctx.get('architecture', 'unknown')}\n"
-                if ctx.get("purpose"):
-                    summary += f"Purpose: {ctx['purpose']}\n"
-            
-            summary += f"\nUse graph_id '{result['graph_id']}' to query this repository."
-            
-            return [TextContent(type="text", text=summary)]
-        else:
-            return [TextContent(
-                type="text",
-                text=f"✗ Ingestion failed: {result.get('error', 'Unknown error')}"
-            )]
-            
-    except httpx.HTTPStatusError as e:
-        logger.error(f"HTTP error during ingestion: {e}")
-        return [TextContent(
-            type="text",
-            text=f"✗ HTTP error: {e.response.status_code} - {e.response.text}"
-        )]
+
+        if not result.get("success"):
+            return _error(result.get("error", "Ingestion failed"))
+
+        lines = [
+            "✓ Repository ingested",
+            f"  Graph ID : {result['graph_id']}",
+            f"  Path     : {result['repo_path']}",
+            f"  Functions: {result['function_count']}",
+            f"  Modules  : {result['module_count']}",
+        ]
+        ctx = result.get("repo_context") or {}
+        if ctx.get("project_type"):
+            lines.append(f"  Type     : {ctx['project_type']}")
+        if ctx.get("architecture"):
+            lines.append(f"  Arch     : {ctx['architecture']}")
+        if ctx.get("purpose"):
+            lines.append(f"  Purpose  : {ctx['purpose']}")
+        lines.append(
+            f"\nUse graph_id '{result['graph_id']}' with query_repo, "
+            "get_repo_overview, and impact_analysis."
+        )
+        return _text("\n".join(lines))
+
+    except httpx.HTTPStatusError as exc:
+        return _error(f"HTTP {exc.response.status_code}: {exc.response.text[:200]}")
     except httpx.TimeoutException:
-        logger.error("Ingestion timeout")
-        return [TextContent(
-            type="text",
-            text="✗ Ingestion timed out. The repository may be too large or the server is unresponsive."
-        )]
-    except Exception as e:
-        logger.error(f"Unexpected error during ingestion: {e}", exc_info=True)
-        return [TextContent(
-            type="text",
-            text=f"✗ Unexpected error: {str(e)}"
-        )]
+        return _error(
+            "Ingestion timed out. The repository may be large; "
+            "try again — the graph may have been partially built."
+        )
+    except Exception as exc:
+        logger.exception("ingest_repo failed")
+        return _error(str(exc))
 
 
-async def handle_query_repo(arguments: dict[str, Any]) -> list[TextContent]:
-    """Handle query_repo tool call with resilience."""
+# ── query_repo ───────────────────────────────────────────────────────────────
+
+async def _handle_query_repo(args: dict) -> list[TextContent]:
+    graph_id = args.get("graph_id", "").strip()
+    query    = args.get("query", "").strip()
+    depth    = args.get("depth", 2)
+
+    if not graph_id or not query:
+        return _error("graph_id and query are required")
+
     try:
-        graph_id = arguments.get("graph_id")
-        query = arguments.get("query")
-        depth = arguments.get("depth", 2)
-        
-        if not graph_id or not query:
-            return [TextContent(
-                type="text",
-                text=json.dumps({
-                    "success": False,
-                    "error": "graph_id and query are required"
-                }, indent=2)
-            )]
-        
-        logger.info(f"Querying graph {graph_id}: {query}")
-        
-        # Call FastAPI endpoint with resilience
-        async with create_http_client() as client:
-            response = await make_resilient_request(
-                client,
-                "post",
-                "/mcp/query",
-                json={"graph_id": graph_id, "query": query, "depth": depth}
-            )
-            response.raise_for_status()
-            result = response.json()
-        
-        logger.info(f"Query complete: {len(result.get('relevant_functions', []))} functions found")
-        
-        # Format response for LLM
-        if result.get("success"):
-            summary = f"Query: {query}\n\n"
-            summary += f"{result['explanation']}\n\n"
-            
-            # Add function details
-            functions = result.get("relevant_functions", [])
-            if functions:
-                summary += f"Relevant Functions ({len(functions)}):\n"
-                for i, func in enumerate(functions[:10], 1):  # Limit to top 10 for readability
-                    summary += f"\n{i}. {func['name']} ({func['file_path']})\n"
-                    if func.get('summary'):
-                        summary += f"   {func['summary']}\n"
-                    if func.get('intent'):
-                        summary += f"   Intent: {func['intent']}\n"
-                    if func.get('criticality'):
-                        summary += f"   Criticality: {func['criticality']}\n"
-                
-                if len(functions) > 10:
-                    summary += f"\n... and {len(functions) - 10} more functions\n"
-            else:
-                summary += "No relevant functions found for this query.\n"
-            
-            return [TextContent(type="text", text=summary)]
-        else:
-            return [TextContent(
-                type="text",
-                text=f"✗ Query failed: {result.get('error', 'Unknown error')}"
-            )]
-            
-    except httpx.HTTPStatusError as e:
-        logger.error(f"HTTP error during query: {e}")
-        return [TextContent(
-            type="text",
-            text=f"✗ HTTP error: {e.response.status_code} - {e.response.text}"
-        )]
-    except httpx.TimeoutException:
-        logger.error("Query timeout")
-        return [TextContent(
-            type="text",
-            text="✗ Query timed out. Try reducing the depth parameter or simplifying the query."
-        )]
-    except Exception as e:
-        logger.error(f"Unexpected error during query: {e}", exc_info=True)
-        return [TextContent(
-            type="text",
-            text=f"✗ Unexpected error: {str(e)}"
-        )]
+        result = await _request(
+            "post", "/mcp/query",
+            timeout=LONG_TIMEOUT,
+            json={"graph_id": graph_id, "query": query, "depth": depth},
+        )
 
+        if not result.get("success"):
+            return _error(result.get("error", "Query failed"))
+
+        lines = [f"Query: {query}", "", result["explanation"], ""]
+
+        funcs = result.get("relevant_functions", [])
+        if funcs:
+            lines.append(f"Relevant functions ({len(funcs)}):")
+            for i, f in enumerate(funcs[:15], 1):
+                line = f"  {i}. {f['name']}  ({f['file_path']})"
+                if f.get("summary"):
+                    line += f"\n     {f['summary']}"
+                meta = []
+                if f.get("intent"):
+                    meta.append(f"intent={f['intent']}")
+                if f.get("criticality"):
+                    meta.append(f"criticality={f['criticality']}")
+                if meta:
+                    line += f"\n     [{', '.join(meta)}]"
+                lines.append(line)
+            if len(funcs) > 15:
+                lines.append(f"  … and {len(funcs) - 15} more")
+        else:
+            lines.append("No relevant functions found.")
+
+        qid = result.get("query_id")
+        if qid:
+            lines.append(f"\nQuery ID: {qid}  (use submit_feedback to rate this result)")
+
+        return _text("\n".join(lines))
+
+    except httpx.HTTPStatusError as exc:
+        return _error(f"HTTP {exc.response.status_code}: {exc.response.text[:200]}")
+    except httpx.TimeoutException:
+        return _error("Query timed out. Try depth=1 or a shorter query.")
+    except Exception as exc:
+        logger.exception("query_repo failed")
+        return _error(str(exc))
+
+
+# ── list_graphs ───────────────────────────────────────────────────────────────
+
+async def _handle_list_graphs(_args: dict) -> list[TextContent]:
+    try:
+        result = await _request("get", "/mcp/graphs", timeout=SHORT_TIMEOUT)
+        graphs = result.get("graphs", [])
+
+        if not graphs:
+            return _text(
+                "No repositories ingested yet.\n"
+                "Use ingest_repo to analyse a repository first."
+            )
+
+        lines = [f"Ingested repositories ({len(graphs)}):"]
+        for g in graphs:
+            lines.append(f"\n  graph_id : {g['graph_id']}")
+            lines.append(f"  path     : {g['repo_path']}")
+            lines.append(f"  functions: {g['function_count']}  modules: {g['module_count']}")
+            if g.get("project_type") and g["project_type"] != "unknown":
+                lines.append(f"  type     : {g['project_type']} / {g.get('architecture','?')}")
+            if g.get("purpose"):
+                lines.append(f"  purpose  : {g['purpose']}")
+        lines.append(
+            "\nPass a graph_id to query_repo, get_repo_overview, "
+            "impact_analysis, or delete_graph."
+        )
+        return _text("\n".join(lines))
+
+    except Exception as exc:
+        logger.exception("list_graphs failed")
+        return _error(str(exc))
+
+
+# ── get_repo_overview ─────────────────────────────────────────────────────────
+
+async def _handle_get_repo_overview(args: dict) -> list[TextContent]:
+    graph_id = args.get("graph_id", "").strip()
+    if not graph_id:
+        return _error("graph_id is required")
+
+    try:
+        ctx_resp, ep_resp = await asyncio.gather(
+            _request("get", "/repo_context", timeout=SHORT_TIMEOUT, params={"graph_id": graph_id}),
+            _request("get", "/entry_points",  timeout=SHORT_TIMEOUT, params={"graph_id": graph_id, "max_count": 6}),
+            return_exceptions=True,
+        )
+
+        lines = [f"Repository overview — {graph_id}"]
+
+        # Repo context
+        if isinstance(ctx_resp, Exception):
+            lines.append(f"\n[repo context unavailable: {ctx_resp}]")
+        else:
+            ctx = ctx_resp.get("context", {})
+            lines += [
+                f"\nPath        : {ctx_resp.get('repo_path', '')}",
+                f"Project type: {ctx.get('project_type', 'unknown')}",
+                f"Architecture: {ctx.get('architecture', 'unknown')}",
+                f"Domain      : {ctx.get('domain', 'general')}",
+            ]
+            if ctx.get("tech_stack"):
+                lines.append(f"Tech stack  : {', '.join(ctx['tech_stack'])}")
+            if ctx.get("purpose"):
+                lines.append(f"Purpose     : {ctx['purpose']}")
+
+        # Entry points
+        if isinstance(ep_resp, Exception):
+            lines.append(f"\n[entry points unavailable: {ep_resp}]")
+        else:
+            ep_nodes = ep_resp.get("nodes", [])
+            if ep_nodes:
+                lines.append("\nEntry points:")
+                for ep in ep_nodes[:6]:
+                    name = ep.get("name") or ep.get("id", "?")
+                    path = ep.get("file_path") or ep.get("module_path") or ""
+                    summary = ep.get("summary") or ep.get("description") or ""
+                    line = f"  • {name}"
+                    if path:
+                        line += f"  ({path})"
+                    if summary:
+                        line += f"\n    {summary}"
+                    lines.append(line)
+
+        lines.append(
+            "\nUse query_repo to explore behaviour, "
+            "or impact_analysis before modifying a function."
+        )
+        return _text("\n".join(lines))
+
+    except httpx.HTTPStatusError as exc:
+        return _error(f"HTTP {exc.response.status_code}: {exc.response.text[:200]}")
+    except Exception as exc:
+        logger.exception("get_repo_overview failed")
+        return _error(str(exc))
+
+
+# ── impact_analysis ───────────────────────────────────────────────────────────
+
+async def _handle_impact_analysis(args: dict) -> list[TextContent]:
+    graph_id      = args.get("graph_id", "").strip()
+    function_name = args.get("function_name", "").strip()
+
+    if not graph_id or not function_name:
+        return _error("graph_id and function_name are required")
+
+    try:
+        result = await _request(
+            "get", "/mcp/impact",
+            timeout=SHORT_TIMEOUT,
+            params={"graph_id": graph_id, "function_name": function_name},
+        )
+
+        risk = result.get("risk_level", "unknown")
+        risk_icon = {"low": "🟢", "medium": "🟡", "high": "🟠", "critical": "🔴"}.get(risk, "⚪")
+
+        lines = [
+            f"Impact analysis: {result.get('node_name', function_name)}",
+            f"File   : {result.get('file_path', '')}",
+            f"Kind   : {result.get('semantic_kind', 'CALLS')}",
+            f"Risk   : {risk_icon} {risk.upper()}",
+        ]
+
+        callers = result.get("callers", [])
+        if callers:
+            lines.append(f"\nDirect callers ({result.get('caller_count', len(callers))}):")
+            for c in callers[:10]:
+                lines.append(f"  ← {c['name']}  ({c['file_path']})")
+            if result.get("caller_count", 0) > 10:
+                lines.append(f"  … and {result['caller_count'] - 10} more")
+        else:
+            lines.append("\nNo callers found (this may be an entry point).")
+
+        callees = result.get("callees", [])
+        if callees:
+            lines.append(f"\nDirect callees ({len(callees)}):")
+            for c in callees[:10]:
+                sk = c.get("semantic_kind", "CALLS")
+                badge = " [DB]" if sk == "USES_DB" else " [API]" if sk == "EXPOSES_API" else ""
+                lines.append(f"  → {c['name']}{badge}  ({c['file_path']})")
+
+        db = result.get("db_interactions", [])
+        if db:
+            lines.append(f"\nDatabase operations touched: {', '.join(db)}")
+
+        mods = result.get("affected_modules", [])
+        if mods:
+            lines.append(f"\nAffected modules: {', '.join(mods)}")
+
+        lines.append(
+            "\nTip: if risk is HIGH or CRITICAL, use query_repo to trace all "
+            "call paths before making changes."
+        )
+        return _text("\n".join(lines))
+
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 404:
+            body = exc.response.json() if exc.response.headers.get("content-type", "").startswith("application/json") else {}
+            detail = body.get("detail", f"Function '{function_name}' not found in graph {graph_id}")
+            return _error(f"{detail}. Use query_repo to find the correct function name.")
+        return _error(f"HTTP {exc.response.status_code}: {exc.response.text[:200]}")
+    except Exception as exc:
+        logger.exception("impact_analysis failed")
+        return _error(str(exc))
+
+
+# ── delete_graph ──────────────────────────────────────────────────────────────
+
+async def _handle_delete_graph(args: dict) -> list[TextContent]:
+    graph_id = args.get("graph_id", "").strip()
+    if not graph_id:
+        return _error("graph_id is required")
+
+    try:
+        result = await _request(
+            "delete", f"/graphs/{graph_id}",
+            timeout=SHORT_TIMEOUT,
+        )
+        return _text(
+            f"✓ Graph {result.get('deleted', graph_id)} deleted.\n"
+            "Run ingest_repo on the same path to re-analyse."
+        )
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 404:
+            return _error(f"Graph '{graph_id}' not found. Use list_graphs to see available graphs.")
+        return _error(f"HTTP {exc.response.status_code}: {exc.response.text[:200]}")
+    except Exception as exc:
+        logger.exception("delete_graph failed")
+        return _error(str(exc))
+
+
+# ── Entry point ───────────────────────────────────────────────────────────────
 
 async def main():
-    """Run the MCP server."""
     from mcp.server.stdio import stdio_server
-    
     async with stdio_server() as (read_stream, write_stream):
-        logger.info("Flowify MCP server starting...")
+        logger.info("Flowify MCP server starting (6 tools)")
         await app.run(
             read_stream,
             write_stream,
-            app.create_initialization_options()
+            app.create_initialization_options(),
         )
 
 
 if __name__ == "__main__":
     asyncio.run(main())
-
-# Made with Bob

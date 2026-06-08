@@ -800,3 +800,74 @@ def delete_graph(graph_id: str):
     if not storage.delete(graph_id):
         raise HTTPException(404, "graph not found")
     return {"deleted": graph_id}
+
+
+# ---------------------------------------------------------------------------
+# MCP helper endpoints
+# ---------------------------------------------------------------------------
+
+@app.get("/mcp/graphs")
+def mcp_list_graphs():
+    """MCP: List every ingested repository with summary metadata.
+
+    Returns graph_id, repo_path, function/module counts, and the
+    LLM-inferred project_type + purpose so an agent can pick the right
+    graph without loading the full payload.
+    """
+    result = []
+    for graph_id in storage.list_graphs():
+        payload = storage.load_light(graph_id)
+        if not payload:
+            continue
+        ctx = storage.load_meta(graph_id, "repo_context") or {}
+        result.append({
+            "graph_id":       graph_id,
+            "repo_path":      payload.repo_path,
+            "function_count": len(payload.function_nodes),
+            "module_count":   len(payload.module_nodes),
+            "project_type":   ctx.get("project_type", "unknown"),
+            "architecture":   ctx.get("architecture", "unknown"),
+            "purpose":        ctx.get("purpose", ""),
+        })
+    return {"graphs": result, "count": len(result)}
+
+
+@app.get("/mcp/impact")
+def mcp_impact_by_name(graph_id: str, function_name: str):
+    """MCP: Change-impact analysis addressed by *function name* rather than node_id.
+
+    Resolves the human-readable name to a node_id internally (first
+    exact match wins; falls back to case-insensitive prefix match) and
+    then delegates to the standard impact analysis logic.
+    """
+    payload = storage.load_light(graph_id)
+    if payload is None:
+        raise HTTPException(404, "graph not found")
+
+    # Exact match first, then case-insensitive
+    node_id: str | None = None
+    lower_name = function_name.lower()
+    for n in payload.function_nodes:
+        if n.name == function_name:
+            node_id = n.id
+            break
+    if node_id is None:
+        for n in payload.function_nodes:
+            if n.name.lower() == lower_name:
+                node_id = n.id
+                break
+    if node_id is None:
+        # prefix fallback
+        for n in payload.function_nodes:
+            if n.name.lower().startswith(lower_name):
+                node_id = n.id
+                break
+    if node_id is None:
+        raise HTTPException(
+            404,
+            f"No function named '{function_name}' found in graph {graph_id}. "
+            "Use query_repo to locate the correct name.",
+        )
+
+    # Delegate to existing impact endpoint (direct call — same process)
+    return get_impact(graph_id=graph_id, node_id=node_id)
