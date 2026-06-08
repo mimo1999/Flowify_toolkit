@@ -298,8 +298,9 @@ class TestPayloadCallEdges:
             "retrieval._entry_nodes must call llm_provider.interpret_query"
 
     def test_explain_calls_explain_flow(self, fn_by_id, calls_edges):
-        assert _calls("explain", M["ret"], "explain_flow", M["llm"], fn_by_id, calls_edges), \
-            "retrieval.explain must call llm_provider.explain_flow"
+        # retrieval.explain now calls explain_flow_with_graph (graph-grounded variant)
+        assert _calls("explain", M["ret"], "explain_flow_with_graph", M["llm"], fn_by_id, calls_edges), \
+            "retrieval.explain must call llm_provider.explain_flow_with_graph"
 
     def test_llmi_calls_ask_json(self, fn_by_id, calls_edges):
         assert _calls("ingest_ast_results", M["llmi"], "ask_json", M["llm"], fn_by_id, calls_edges), \

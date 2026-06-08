@@ -162,9 +162,23 @@ class TestMCPIngestEndpoint:
         assert response.status_code == 422  # Validation error
 
 
+def _make_func_node(i):
+    """Helper: build a mock FunctionNode for test_query_limits_function_count.
+    Defined at module level to avoid nested-function graph-builder edge issues."""
+    n = Mock()
+    n.id = f"func{i}"
+    n.name = f"function_{i}"
+    n.file_path = f"/src/file{i}.py"
+    n.type = "function"
+    n.summary = f"Function {i}"
+    n.semantics = None
+    n.adapter_metadata = {}
+    return n
+
+
 class TestMCPQueryEndpoint:
     """Test suite for /mcp/query endpoint."""
-    
+
     def test_query_success(self, client, mock_storage, mock_retrieval):
         """Test successful query execution."""
         # Setup mocks
@@ -194,10 +208,12 @@ class TestMCPQueryEndpoint:
         mock_payload.function_nodes = [mock_func1, mock_func2]
         
         mock_storage.load.return_value = mock_payload
+        import networkx as nx
         mock_retrieval.retrieve_subgraph.return_value = (
             ["func1", "func2"],
             {"nodes": [], "edges": []},
-            "query-id-123"
+            "query-id-123",
+            nx.DiGraph(),
         )
         mock_retrieval.explain.return_value = "Authentication flow explanation"
         
@@ -249,7 +265,8 @@ class TestMCPQueryEndpoint:
         mock_payload = Mock()
         mock_payload.function_nodes = []
         mock_storage.load.return_value = mock_payload
-        mock_retrieval.retrieve_subgraph.return_value = ([], {}, "qid")
+        import networkx as nx
+        mock_retrieval.retrieve_subgraph.return_value = ([], {}, "qid", nx.DiGraph())
         mock_retrieval.explain.return_value = "No results"
         
         # Test valid depth
@@ -301,24 +318,17 @@ class TestMCPQueryEndpoint:
     def test_query_limits_function_count(self, client, mock_storage, mock_retrieval):
         """Test that response limits function count to 20."""
         mock_payload = Mock()
-        # Create 30 mock functions
-        mock_payload.function_nodes = [
-            Mock(
-                id=f"func{i}",
-                name=f"function_{i}",
-                file_path=f"/src/file{i}.py",
-                type="function",
-                summary=f"Function {i}",
-                semantics=None
-            )
-            for i in range(30)
-        ]
+        # Create 30 mock functions using the module-level helper.
+        # (Nested function definitions cause graph-builder edge source issues in test_self_graph.)
+        mock_payload.function_nodes = [_make_func_node(i) for i in range(30)]
         
         mock_storage.load.return_value = mock_payload
+        import networkx as nx
         mock_retrieval.retrieve_subgraph.return_value = (
             [f"func{i}" for i in range(30)],
             {},
-            "qid"
+            "qid",
+            nx.DiGraph(),
         )
         mock_retrieval.explain.return_value = "Explanation"
         
