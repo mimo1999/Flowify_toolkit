@@ -91,10 +91,6 @@ class RepositoryContext(BaseModel):
         default_factory=list,
         description="Core modules identified by Bob"
     )
-    data_flow_pattern: Optional[str] = Field(
-        None,
-        description="High-level data flow description"
-    )
     confidence: float = Field(
         default=0.0,
         ge=0.0, le=1.0,
@@ -130,10 +126,6 @@ class SemanticMetadata(BaseModel):
         "file_io", "network", "database", "state_mutation",
         "logging", "none"
     ]] = Field(default_factory=list)
-    data_flow: Optional[Dict[str, Any]] = Field(
-        None,
-        description="Input/output/transformation description"
-    )
     confidence: float = Field(
         default=0.0,
         ge=0.0, le=1.0,
@@ -360,11 +352,41 @@ class QueryRequest(BaseModel):
     )
 
 
+class ExecutionStep(BaseModel):
+    """One step in an ordered execution path."""
+    id: str
+    name: str
+    file_path: str
+    semantic_kind: str = "CALLS"    # CALLS | USES_DB | EXPOSES_API | EMITS_EVENT | CONSUMES_EVENT
+    intent: Optional[str] = None
+    summary: Optional[str] = None
+    edge_label: Optional[str] = None  # label on the edge TO this step
+
+
+class ImpactAnalysis(BaseModel):
+    """Change-impact summary for a given node."""
+    node_id: str
+    node_name: str
+    file_path: str
+    callers: List[Dict[str, Any]] = Field(default_factory=list, description="Functions that call this one")
+    callees: List[Dict[str, Any]] = Field(default_factory=list, description="Functions this one calls")
+    db_interactions: List[str] = Field(default_factory=list)
+    affected_modules: List[str] = Field(default_factory=list)
+    caller_count: int = 0
+    risk_level: Literal["low", "medium", "high", "critical"] = "low"
+    semantic_kind: str = "CALLS"
+
+
 class QueryResponse(BaseModel):
     explanation: str
     subgraph: Dict[str, Any]
     path: List[str]
     query_id: Optional[str] = None
+    execution_steps: List[ExecutionStep] = Field(
+        default_factory=list,
+        description="Ordered structured execution path for display"
+    )
+    graph_nodes_consulted: int = 0  # For "grounded in graph" badge
 
 
 # MCP-specific normalized models
@@ -410,9 +432,6 @@ class QueryPattern(BaseModel):
         description="Unique query identifier"
     )
     query_text: str
-    normalized_query: str = Field(
-        description="Lowercased, tokenized version for matching"
-    )
     graph_id: str
     retrieved_nodes: List[str] = Field(
         default_factory=list,

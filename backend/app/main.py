@@ -8,7 +8,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from . import bob_export, pipeline, storage, retrieval, module_abstractor, learning
 from .models import (
     BobGraphRequest, IngestRequest, UpdateRequest, QueryRequest, QueryResponse,
-    RepositoryContext, FeedbackRequest, MCPIngestResponse, MCPQueryResponse
+    FeedbackRequest, MCPIngestResponse, MCPQueryResponse,
+    ImpactAnalysis,
 )
 
 # Configure logging
@@ -34,17 +35,24 @@ def provider_info():
     from . import llm_provider
     p = llm_provider.get_provider()
     name = type(p).__name__.replace("Provider", "").lower()
+    # Ollama: surface the model name in the badge
+    extra = {}
+    if name == "ollama":
+        extra["model"] = getattr(p, "model", "")
+        extra["host"]  = getattr(p, "host", "http://localhost:11434")
     return {
         "provider": name,
         "is_stub": name == "heuristic",
         "display_name": {
             "heuristic": "No LLM (stub mode)",
+            "ollama":    f"Ollama ({extra.get('model', 'local')})",
             "bob":       "IBM watsonx / Bob",
             "anthropic": "Anthropic Claude",
             "openai":    "OpenAI",
             "copilot":   "GitHub Copilot",
             "openclaw":  "OpenClaw",
         }.get(name, name),
+        **extra,
     }
 
 
@@ -235,15 +243,24 @@ def get_graph(graph_id: str, depth: int = 1):
 
 @app.post("/query", response_model=QueryResponse)
 def query_graph(req: QueryRequest):
-    """Legacy query endpoint - maintained for backward compatibility."""
+    """Query endpoint — returns graph-grounded explanation + structured execution path."""
     payload = storage.load(req.graph_id)
     if payload is None:
         raise HTTPException(404, "graph not found")
-    
-    # Phase 3: Retrieve with learning tracking
-    ordered, sub, query_id = retrieval.retrieve_subgraph(payload, req.query, max_hops=req.depth)
+
+    # Retrieve with learning tracking; graph returned for step building
+    ordered, sub, query_id, g = retrieval.retrieve_subgraph(payload, req.query, max_hops=req.depth)
     explanation = retrieval.explain(payload, req.query, ordered)
-    return QueryResponse(explanation=explanation, subgraph=sub, path=ordered, query_id=query_id)
+    execution_steps = retrieval.build_execution_steps(payload, ordered, g)
+
+    return QueryResponse(
+        explanation=explanation,
+        subgraph=sub,
+        path=ordered,
+        query_id=query_id,
+        execution_steps=execution_steps,
+        graph_nodes_consulted=len(ordered),
+    )
 
 
 @app.post("/mcp/query", response_model=MCPQueryResponse)
@@ -270,7 +287,7 @@ def mcp_query_repo(req: QueryRequest):
             )
         
         # Retrieve subgraph with learning tracking
-        ordered, sub, query_id = retrieval.retrieve_subgraph(payload, req.query, max_hops=req.depth)
+        ordered, sub, query_id, _g = retrieval.retrieve_subgraph(payload, req.query, max_hops=req.depth)
         explanation = retrieval.explain(payload, req.query, ordered)
         
         # Build enriched function list
@@ -316,6 +333,109 @@ def mcp_query_repo(req: QueryRequest):
         )
 
 
+@app.get("/impact", response_model=ImpactAnalysis)
+def get_impact(graph_id: str, node_id: str):
+    """Change-impact analysis for a given node.
+
+    Returns:
+      - callers: functions that directly call this node
+      - callees: functions this node calls
+      - db_interactions: DB-touching callees
+      - affected_modules: module names that would be impacted
+      - risk_level: low / medium / high / critical
+    """
+    payload = storage.load(graph_id)
+    if payload is None:
+        raise HTTPException(404, "graph not found")
+
+    func_by_id = {n.id: n for n in payload.function_nodes}
+    target = func_by_id.get(node_id)
+    if target is None:
+        raise HTTPException(404, "node not found")
+
+    # Build adjacency structures
+    callers_map: dict[str, list[str]] = {}
+    callees_map: dict[str, list[str]] = {}
+    for e in payload.function_edges:
+        if e.relationship == "INVOKES" or e.type == "CALLS":
+            callees_map.setdefault(e.source_id, []).append(e.target_id)
+            callers_map.setdefault(e.target_id, []).append(e.source_id)
+
+    # Direct callers
+    direct_callers = callers_map.get(node_id, [])
+    callers_data = []
+    for cid in direct_callers[:30]:
+        n = func_by_id.get(cid)
+        if n:
+            callers_data.append({
+                "id": n.id, "name": n.name, "file_path": n.file_path,
+                "semantic_kind": n.adapter_metadata.get("semantic_kind", "CALLS"),
+            })
+
+    # Direct callees
+    direct_callees = callees_map.get(node_id, [])
+    callees_data = []
+    db_interactions = []
+    for cid in direct_callees[:30]:
+        n = func_by_id.get(cid)
+        if n:
+            sk = n.adapter_metadata.get("semantic_kind", "CALLS")
+            callees_data.append({
+                "id": n.id, "name": n.name, "file_path": n.file_path,
+                "semantic_kind": sk,
+            })
+            if sk == "USES_DB":
+                db_interactions.append(n.name)
+        # Also check via semantic metadata side_effects
+        if n and n.semantics and "database" in (n.semantics.side_effects or []):
+            if n.name not in db_interactions:
+                db_interactions.append(n.name)
+
+    # BFS downstream to count all affected nodes
+    visited: set[str] = {node_id}
+    frontier = list(direct_callees)
+    while frontier:
+        nid = frontier.pop()
+        if nid in visited:
+            continue
+        visited.add(nid)
+        frontier.extend(callees_map.get(nid, []))
+    downstream_count = len(visited) - 1  # exclude self
+
+    # Affected modules
+    affected_module_names = []
+    for m in payload.module_nodes:
+        affected_fids = set(m.linked_function_ids) & visited
+        if affected_fids and node_id not in m.linked_function_ids:
+            affected_module_names.append(m.name)
+
+    # Risk level
+    target_semantic_kind = target.adapter_metadata.get("semantic_kind", "CALLS")
+    criticality = target.semantics.criticality if target.semantics else "medium"
+    if (downstream_count > 30 or criticality == "critical" or
+            target_semantic_kind in ("EXPOSES_API", "USES_DB")):
+        risk = "critical"
+    elif downstream_count > 10 or criticality == "high":
+        risk = "high"
+    elif downstream_count > 3 or criticality == "medium":
+        risk = "medium"
+    else:
+        risk = "low"
+
+    return ImpactAnalysis(
+        node_id=node_id,
+        node_name=target.name,
+        file_path=target.file_path,
+        callers=callers_data,
+        callees=callees_data,
+        db_interactions=db_interactions,
+        affected_modules=list(dict.fromkeys(affected_module_names))[:10],  # dedup, preserve order
+        caller_count=len(direct_callers),
+        risk_level=risk,
+        semantic_kind=target_semantic_kind,
+    )
+
+
 @app.post("/update")
 def update_graph(req: UpdateRequest):
     payload = pipeline.update(req.graph_id)
@@ -325,6 +445,58 @@ def update_graph(req: UpdateRequest):
         "graph_id": payload.graph_id,
         "function_count": len(payload.function_nodes),
         "module_count": len(payload.module_nodes),
+    }
+
+
+@app.post("/generate_descriptions")
+def generate_descriptions(graph_id: str):
+    """Generate (or regenerate) LLM 1-line descriptions for every node in an
+    existing graph that currently has no real summary (stub or empty).
+
+    Uses the currently configured LLM provider; safe to call repeatedly
+    (already-generated descriptions are not overwritten).
+    Returns counts of how many were newly generated vs already present.
+    """
+    payload = storage.load(graph_id)
+    if payload is None:
+        raise HTTPException(404, "graph not found")
+
+    from . import llm_provider as lp
+
+    provider = lp.get_provider()
+    is_real_llm = not getattr(provider, "_is_heuristic", False)
+
+    total = 0
+    generated = 0
+    skipped = 0
+
+    for n in payload.function_nodes:
+        if not pipeline._is_callable(n):
+            continue
+        total += 1
+        if not pipeline._is_stub(n.summary, n):  # now also catches heuristic-tagged nodes
+            skipped += 1
+            continue
+        if n.code_snippet:
+            n.summary = provider.summarize_function(
+                n.name,
+                n.code_snippet,
+                kind=n.kind or n.type or "function",
+            )
+        else:
+            from .llm_provider import _heuristic_one_liner
+            n.summary = _heuristic_one_liner(n.name, n.kind or "function")
+        n.adapter_metadata["summary_source"] = "llm" if is_real_llm else "heuristic"
+        generated += 1
+
+    if generated:
+        storage.save(payload)
+
+    return {
+        "graph_id": graph_id,
+        "total_callable_nodes": total,
+        "newly_generated": generated,
+        "already_had_description": skipped,
     }
 
 

@@ -1,11 +1,11 @@
 """Phase 7 + 8: GraphRAG retrieval and flow explanation."""
 from __future__ import annotations
-from typing import Dict, List, Tuple
+from typing import List, Tuple
 import time
 
 import networkx as nx
 
-from .models import GraphPayload
+from .models import GraphPayload, ExecutionStep
 from . import llm_provider as bob_client, learning
 
 
@@ -65,13 +65,13 @@ def _entry_nodes(g: nx.DiGraph, query: str, graph_id: str) -> List[str]:
     return entries
 
 
-def retrieve_subgraph(payload: GraphPayload, query: str, max_hops: int = 2) -> Tuple[List[str], dict, str]:
+def retrieve_subgraph(payload: GraphPayload, query: str, max_hops: int = 2) -> Tuple[List[str], dict, str, nx.DiGraph]:
     """Retrieve subgraph for query with learning tracking.
-    
-    Returns: (ordered_nodes, subgraph_dict, query_id)
+
+    Returns: (ordered_nodes, subgraph_dict, query_id, graph)
     """
     start_time = time.time()
-    
+
     g = _graph_from_payload(payload)
     entries = _entry_nodes(g, query, payload.graph_id)
     visited: Dict[str, int] = {}
@@ -97,7 +97,7 @@ def retrieve_subgraph(payload: GraphPayload, query: str, max_hops: int = 2) -> T
     for e in payload.function_edges:
         if e.source_id in visited_set and e.target_id in visited_set and e.relationship == "INVOKES":
             sub_edges.append(e.model_dump())
-    
+
     # Phase 3: Record query for learning
     response_time_ms = int((time.time() - start_time) * 1000)
     query_id = learning.record_query(
@@ -106,19 +106,81 @@ def retrieve_subgraph(payload: GraphPayload, query: str, max_hops: int = 2) -> T
         order,
         response_time_ms
     )
-    
-    return order, {"nodes": sub_nodes, "edges": sub_edges, "entries": entries}, query_id
+
+    return order, {"nodes": sub_nodes, "edges": sub_edges, "entries": entries}, query_id, g
+
+
+def build_execution_steps(
+    payload: GraphPayload,
+    ordered_ids: List[str],
+    g: nx.DiGraph,
+) -> List[ExecutionStep]:
+    """Build ordered, structured execution steps from traversal results."""
+    by_id = {n.id: n for n in payload.function_nodes}
+    steps: List[ExecutionStep] = []
+    ordered_set = set(ordered_ids)
+
+    for i, nid in enumerate(ordered_ids[:20]):
+        n = by_id.get(nid)
+        if not n:
+            continue
+        # Determine semantic kind from adapter_metadata
+        semantic_kind = n.adapter_metadata.get("semantic_kind", "CALLS")
+        if n.semantics:
+            # Override with LLM-derived intent where we can map it
+            intent_to_kind = {
+                "persistence": "USES_DB",
+                "retrieval": "USES_DB",
+                "orchestration": "CALLS",
+            }
+            semantic_kind = intent_to_kind.get(n.semantics.intent, semantic_kind)
+
+        # Find what edge type leads from previous step to this one
+        edge_label = None
+        if i > 0:
+            prev_id = ordered_ids[i - 1]
+            if g.has_edge(prev_id, nid):
+                edge_data = g.get_edge_data(prev_id, nid) or {}
+                edge_label = edge_data.get("type", "CALLS")
+
+        steps.append(ExecutionStep(
+            id=nid,
+            name=n.name,
+            file_path=n.file_path,
+            semantic_kind=semantic_kind,
+            intent=n.semantics.intent if n.semantics else None,
+            summary=n.summary,
+            edge_label=edge_label,
+        ))
+    return steps
 
 
 def explain(payload: GraphPayload, query: str, ordered_ids: List[str]) -> str:
     by_id = {n.id: n for n in payload.function_nodes}
     summaries = []
-    for nid in ordered_ids[:15]:
+    edge_info = []
+
+    # Build graph for edge relationship info
+    g = _graph_from_payload(payload)
+
+    for i, nid in enumerate(ordered_ids[:15]):
         n = by_id.get(nid)
         if not n:
             continue
         s = n.summary or n.name
-        summaries.append(f"{n.name} ({n.file_path}): {s}")
+        semantic_kind = n.adapter_metadata.get("semantic_kind", "CALLS")
+        intent = n.semantics.intent if n.semantics else "unknown"
+        summaries.append(
+            f"{n.name} ({n.file_path}) [{semantic_kind}/{intent}]: {s}"
+        )
+        if i > 0:
+            prev_id = ordered_ids[i - 1]
+            if g.has_edge(prev_id, nid):
+                ed = g.get_edge_data(prev_id, nid) or {}
+                prev_node = by_id.get(prev_id)
+                if prev_node:
+                    edge_info.append(f"  {prev_node.name} --[{ed.get('type','CALLS')}]--> {n.name}")
+
     if not summaries:
         return "No relevant functions found in the graph for that query."
-    return bob_client.explain_flow(query, summaries)
+    return bob_client.explain_flow_with_graph(query, summaries, edge_info)
