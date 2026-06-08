@@ -1,12 +1,125 @@
 """Phase 7 + 8: GraphRAG retrieval and flow explanation."""
 from __future__ import annotations
-from typing import List, Tuple
+from collections import defaultdict
+from typing import Dict, List, Optional, Tuple
+import math
+import re
 import time
 
 import networkx as nx
 
 from .models import GraphPayload, ExecutionStep
 from . import llm_provider as bob_client, learning
+
+
+# ---------------------------------------------------------------------------
+# Semantic synonym table — expands query tokens into code-domain equivalents
+# so "authentication" finds nodes named verify_token, check_credentials, etc.
+# ---------------------------------------------------------------------------
+_SYNONYMS: Dict[str, List[str]] = {
+    "auth":         ["authenticate", "authorization", "login", "verify", "credential", "token", "session", "jwt"],
+    "authenticat":  ["login", "verify", "credential", "token", "session", "jwt", "password"],
+    "login":        ["signin", "authenticate", "session", "credential", "user"],
+    "password":     ["credential", "hash", "bcrypt", "verify", "salt"],
+    "user":         ["account", "profile", "member", "customer", "person", "principal"],
+    "request":      ["http", "endpoint", "route", "handler", "controller", "api"],
+    "api":          ["endpoint", "route", "handler", "controller", "rest", "http", "url"],
+    "endpoint":     ["route", "handler", "api", "url", "path"],
+    "database":     ["db", "sql", "query", "repository", "dao", "store", "persist", "orm"],
+    "db":           ["sql", "query", "repository", "persist", "store", "model"],
+    "query":        ["search", "filter", "find", "fetch", "retrieve", "select"],
+    "search":       ["find", "query", "lookup", "retrieve", "fetch", "filter"],
+    "error":        ["exception", "failure", "invalid", "reject", "raise", "catch", "handle"],
+    "exception":    ["error", "failure", "invalid", "reject"],
+    "create":       ["new", "insert", "add", "build", "make", "register", "init"],
+    "delete":       ["remove", "drop", "destroy", "cleanup", "purge"],
+    "update":       ["modify", "change", "set", "edit", "patch", "save"],
+    "send":         ["emit", "publish", "dispatch", "notify", "push", "fire"],
+    "event":        ["emit", "publish", "dispatch", "notify", "subscribe", "listen"],
+    "validate":     ["check", "verify", "ensure", "assert", "sanitize", "parse"],
+    "parse":        ["decode", "deserialize", "read", "extract", "transform"],
+    "cache":        ["store", "memory", "buffer", "redis", "memcache", "ttl"],
+    "file":         ["path", "directory", "folder", "disk", "read", "write", "io"],
+    "ingest":       ["import", "load", "process", "pipeline", "scan"],
+    "graph":        ["node", "edge", "network", "tree", "traverse"],
+    "test":         ["assert", "verify", "check", "mock", "spec"],
+    "config":       ["settings", "options", "env", "parameter", "setup"],
+    "connect":      ["open", "init", "setup", "establish", "pool"],
+    "close":        ["disconnect", "cleanup", "teardown", "finalize", "shutdown"],
+    "load":         ["read", "import", "fetch", "deserialize", "restore"],
+    "save":         ["write", "persist", "store", "serialize", "dump"],
+    "render":       ["display", "format", "output", "template", "view"],
+    "process":      ["handle", "transform", "pipeline", "run", "execute"],
+    "model":        ["schema", "entity", "struct", "class", "type"],
+    "token":        ["jwt", "session", "credential", "bearer", "access"],
+    "hash":         ["encrypt", "bcrypt", "sha", "md5", "digest", "checksum"],
+    "log":          ["logger", "audit", "trace", "debug", "monitor"],
+    "upload":       ["file", "multipart", "stream", "blob", "store"],
+    "download":     ["fetch", "stream", "read", "export", "get"],
+    "migrate":      ["schema", "upgrade", "version", "alembic", "flyway"],
+    "notify":       ["email", "webhook", "push", "alert", "message"],
+    "payment":      ["charge", "billing", "stripe", "invoice", "order"],
+    "image":        ["photo", "resize", "compress", "thumbnail", "media"],
+}
+
+
+def _tokenize(text: str) -> List[str]:
+    """Split identifier text on word-boundaries, underscores, dots, and camelCase."""
+    parts = re.findall(r"[A-Za-z][a-z0-9]*|[0-9]+", text)
+    return [p.lower() for p in parts if len(p) > 1]
+
+
+def _expand_tokens(raw_tokens: List[str]) -> set:
+    """Return the original tokens plus their code-domain synonyms."""
+    expanded: set = set(raw_tokens)
+    for t in raw_tokens:
+        # Exact lookup
+        if t in _SYNONYMS:
+            expanded.update(_SYNONYMS[t])
+        # Prefix / substring lookup (e.g. "authenticat" covers "authenticate")
+        for key, syns in _SYNONYMS.items():
+            if len(t) >= 5 and (key.startswith(t) or t.startswith(key)):
+                expanded.update(syns)
+                expanded.add(key)
+    return expanded
+
+
+def _build_idf(node_docs: List[str]) -> Dict[str, float]:
+    """Compute log-IDF for every token seen across *node_docs*.
+
+    IDF(t) = log((N+1) / (df(t)+1)) + 1   (Scikit-learn smooth variant)
+    High IDF → rare, discriminative term.  Low IDF → ubiquitous (get/set/init).
+    """
+    N = len(node_docs)
+    df: Dict[str, int] = defaultdict(int)
+    for doc in node_docs:
+        for tok in set(_tokenize(doc)):
+            df[tok] += 1
+    return {t: math.log((N + 1) / (cnt + 1)) + 1.0 for t, cnt in df.items()}
+
+
+def _score_node(d: dict, query_tokens: set, idf: Dict[str, float]) -> float:
+    """Multi-signal relevance score: name (3×) + summary (1.5×) + path (0.5×) + intent (1×)."""
+    name_toks    = set(_tokenize(d.get("name", "")))
+    summary_toks = set(_tokenize(d.get("summary") or ""))
+    path_toks    = set(_tokenize(d.get("file_path") or ""))
+    semantics    = d.get("semantics") or {}
+    if isinstance(semantics, dict):
+        intent = semantics.get("intent", "")
+    else:
+        intent = getattr(semantics, "intent", "") or ""
+    intent_toks  = set(_tokenize(intent))
+
+    hits_name    = query_tokens & name_toks
+    hits_summary = query_tokens & summary_toks
+    hits_path    = query_tokens & path_toks
+    hits_intent  = query_tokens & intent_toks
+
+    score  = sum(3.0 * idf.get(t, 1.0) for t in hits_name)
+    score += sum(1.5 * idf.get(t, 1.0) for t in hits_summary)
+    score += sum(0.5 * idf.get(t, 1.0) for t in hits_path)
+    score += sum(1.0 * idf.get(t, 1.0) for t in hits_intent)
+    return score
 
 
 def _is_code_symbol(data: dict) -> bool:
@@ -28,40 +141,77 @@ def _graph_from_payload(payload: GraphPayload) -> nx.DiGraph:
 
 
 def _entry_nodes(g: nx.DiGraph, query: str, graph_id: str) -> List[str]:
-    """Find entry nodes for query, enhanced with learning data."""
-    candidates_by_name: Dict[str, List[str]] = {}
+    """Find entry nodes using multi-signal TF-IDF scoring + semantic synonym expansion.
+
+    Pipeline:
+    1. Expand query tokens with code-domain synonyms (auth → jwt, token, …)
+    2. Score every node: name (3×) + summary (1.5×) + path (0.5×) via TF-IDF
+    3. Pre-select top-30 candidates and pass them WITH summaries to the LLM
+       so it can make semantic judgements, not just name matches
+    4. Merge LLM selections with the top-5 scored nodes so we always have seeds
+    """
+    # ── 1. Collect code-symbol nodes ─────────────────────────────────────────
+    code_nodes: Dict[str, dict] = {}          # nid → node data
     for nid, d in g.nodes(data=True):
         if _is_code_symbol(d):
-            candidates_by_name.setdefault(d["name"], []).append(nid)
-    
-    names = list(candidates_by_name.keys())
-    
-    # Phase 3: Get terminology suggestions from learning
-    learned_suggestions = learning.get_terminology_suggestions(graph_id, query)
-    
-    # Combine Bob's interpretation with learned suggestions
-    chosen = bob_client.interpret_query(query, names)
-    
-    # Add learned suggestions that aren't already in chosen
-    for suggestion in learned_suggestions:
-        if suggestion not in chosen:
-            chosen.append(suggestion)
-    
+            code_nodes[nid] = d
+
+    if not code_nodes:
+        return []
+
+    # ── 2. Expand query tokens with synonyms ─────────────────────────────────
+    raw_tokens = _tokenize(query)
+    query_tokens = _expand_tokens(raw_tokens)
+
+    # ── 3. Compute IDF across all node documents ──────────────────────────────
+    node_docs = [
+        (d.get("name") or "") + " " + (d.get("summary") or "") + " " + (d.get("file_path") or "")
+        for d in code_nodes.values()
+    ]
+    idf = _build_idf(node_docs)
+
+    # ── 4. Score and rank all nodes ───────────────────────────────────────────
+    scored: List[Tuple[float, str]] = sorted(
+        ((_score_node(d, query_tokens, idf), nid) for nid, d in code_nodes.items()),
+        reverse=True,
+    )
+
+    # ── 5. Build shortlist of top-30 candidates for the LLM ──────────────────
+    top_nids = [nid for _, nid in scored[:30]]
+    name_to_nids: Dict[str, List[str]] = {}
+    for nid in top_nids:
+        name = code_nodes[nid].get("name", nid)
+        name_to_nids.setdefault(name, []).append(nid)
+
+    # Summary context lets the LLM match semantically (not just by name)
+    context: Dict[str, str] = {
+        code_nodes[nid].get("name", nid): (code_nodes[nid].get("summary") or "")[:80]
+        for nid in top_nids
+    }
+
+    # ── 6. LLM re-ranks the shortlist ────────────────────────────────────────
+    learned = learning.get_terminology_suggestions(graph_id, query)
+    chosen_names = bob_client.interpret_query(query, list(name_to_nids.keys()), context)
+    for s in learned:
+        if s not in chosen_names:
+            chosen_names.append(s)
+
+    # ── 7. Collect node IDs: LLM selections first ────────────────────────────
     entries: List[str] = []
-    for n in chosen:
-        for nid in candidates_by_name.get(n, []):
-            entries.append(nid)
-    
-    if not entries and names:
-        # fallback: take a few nodes whose summary mentions any query word
-        q_tokens = {t.lower() for t in query.split() if len(t) > 2}
-        for nid, d in g.nodes(data=True):
-            blob = (d.get("summary") or "") + " " + (d.get("name") or "")
-            if any(t in blob.lower() for t in q_tokens):
+    seen: set = set()
+    for name in chosen_names:
+        for nid in name_to_nids.get(name, []):
+            if nid not in seen:
                 entries.append(nid)
-                if len(entries) >= 5:
-                    break
-    
+                seen.add(nid)
+
+    # ── 8. Always seed with the top-5 TF-IDF scorers that have score > 0 ─────
+    # This ensures we get results even when the LLM picks nothing useful.
+    for score, nid in scored[:5]:
+        if score > 0 and nid not in seen:
+            entries.append(nid)
+            seen.add(nid)
+
     return entries
 
 

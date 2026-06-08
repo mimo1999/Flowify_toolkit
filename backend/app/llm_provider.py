@@ -434,29 +434,42 @@ class LLMProvider(ABC):
             Be specific about function names. Say "according to the graph" to reinforce grounding.
         """).strip()).strip()
 
-    def interpret_query(self, query: str, candidates: List[str]) -> List[str]:
+    def interpret_query(
+        self,
+        query: str,
+        candidates: List[str],
+        context: Optional[dict] = None,
+    ) -> List[str]:
+        """Pick the most relevant symbols for *query* from *candidates*.
+
+        *context* is an optional ``{name: summary}`` dict.  When provided, each
+        candidate line is formatted as ``name — summary`` so the LLM can match
+        on *meaning*, not just token overlap in the identifier.
+        """
         if not candidates:
             return []
-        # Pre-filter: prioritise names that share tokens with the query so the
-        # LLM prompt stays small (faster inference on the first/uncached call).
-        q_tokens = {t.lower() for t in query.replace("?", " ").split() if len(t) > 2}
-        if q_tokens:
-            scored = sorted(
-                candidates,
-                key=lambda n: sum(1 for t in q_tokens if t in n.lower()),
-                reverse=True,
-            )
+        # Build prompt lines: "name — one-line summary" when context is available
+        if context:
+            lines = [
+                f"{n} — {context[n][:80]}" if context.get(n) else n
+                for n in candidates[:30]
+            ]
         else:
-            scored = candidates
-        shortlist = scored[:30]  # send at most 30 names to the LLM
+            lines = candidates[:30]
         raw = self.ask(textwrap.dedent(f"""
-            User query: {query}
-            Candidate symbols (one per line):
-            {chr(10).join(shortlist)}
+            You are matching a developer query to function names in a codebase.
 
-            Return up to 10 most relevant symbol names, one per line, no commentary.
+            Query: {query}
+
+            Candidate functions (name — description):
+            {chr(10).join(lines)}
+
+            Return the names of up to 10 functions most relevant to the query.
+            Output ONE function name per line — the plain name only, no description,
+            no numbering, no commentary.
         """).strip())
-        return [l.strip() for l in raw.splitlines() if l.strip()][:10]
+        # Strip any trailing " — description" the LLM might echo back
+        return [re.sub(r"\s*[—–-].*$", "", l).strip() for l in raw.splitlines() if l.strip()][:10]
 
     def analyze_repository(self, repo_path: str) -> dict:
         heuristic = _heuristic_repo_analysis(repo_path)
@@ -730,13 +743,21 @@ class HeuristicProvider(LLMProvider):
             return _code_based_description(name, code, kind)
         return _heuristic_one_liner(name, kind)
 
-    def interpret_query(self, query: str, candidates: List[str]) -> List[str]:
-        q_tokens = {t.lower() for t in query.replace("?", " ").split() if len(t) > 2}
-        scored = sorted(
-            ((sum(1 for t in q_tokens if t in name.lower()), name) for name in candidates),
-            reverse=True,
-        )
-        return [name for score, name in scored if score][:10]
+    def interpret_query(
+        self,
+        query: str,
+        candidates: List[str],
+        context: Optional[dict] = None,
+    ) -> List[str]:
+        q_tokens = {t.lower() for t in re.split(r"\W+", query) if len(t) > 2}
+        scored = []
+        for name in candidates:
+            name_score = sum(1.5 for t in q_tokens if t in name.lower())
+            summary = (context or {}).get(name, "")
+            summary_score = sum(1.0 for t in q_tokens if t in summary.lower())
+            scored.append((name_score + summary_score, name))
+        scored.sort(reverse=True)
+        return [name for score, name in scored if score > 0][:10]
 
     def analyze_repository(self, repo_path: str) -> dict:
         return _heuristic_repo_analysis(repo_path)
@@ -1071,8 +1092,8 @@ def summarize_module(name_hint: str, summaries: List[str]) -> dict:
 def explain_flow_with_graph(query: str, summaries: List[str], edge_info: Optional[List[str]] = None) -> str:
     return _get().explain_flow_with_graph(query, summaries, edge_info)
 
-def interpret_query(query: str, candidates: List[str]) -> List[str]:
-    return _get().interpret_query(query, candidates)
+def interpret_query(query: str, candidates: List[str], context: Optional[dict] = None) -> List[str]:
+    return _get().interpret_query(query, candidates, context)
 
 def analyze_repository(repo_path: str) -> dict:
     return _get().analyze_repository(repo_path)
