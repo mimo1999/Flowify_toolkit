@@ -53,21 +53,42 @@ def _cache_path(prompt: str) -> Path:
     return _CACHE_DIR / f"{h}.json"
 
 
+def _is_stub_response(text: str) -> bool:
+    """Return True if *text* is a heuristic stub or provider error — not worth caching."""
+    return text.startswith("(stub)") or any(
+        marker in text
+        for marker in ("[llm error:", "[ollama error:", "[bob error:", "[openai error:", "[claude error:")
+    )
+
+
 def _cache_get(prompt: str) -> Optional[str]:
     p = _cache_path(prompt)
     if p.exists():
         try:
-            return json.loads(p.read_text(encoding="utf-8"))["response"]
+            val = json.loads(p.read_text(encoding="utf-8"))["response"]
+            if val and not _is_stub_response(val):
+                return val
+            # Stale stub/error entry — evict it so the real LLM is retried next call
+            try:
+                p.unlink(missing_ok=True)
+            except Exception:
+                pass
         except Exception:
-            return None
+            pass
     return None
 
 
 def _cache_put(prompt: str, response: str) -> None:
-    _cache_path(prompt).write_text(
-        json.dumps({"prompt": prompt[:500], "response": response}),
-        encoding="utf-8",
-    )
+    """Write *response* to the disk cache.  Stubs and errors are never cached."""
+    if _is_stub_response(response):
+        return
+    try:
+        _cache_path(prompt).write_text(
+            json.dumps({"prompt": prompt[:500], "response": response}),
+            encoding="utf-8",
+        )
+    except Exception:
+        pass  # Cache writes are non-fatal
 
 
 # ---------------------------------------------------------------------------
@@ -322,12 +343,21 @@ class LLMProvider(ABC):
         """Make a raw LLM call and return the text response."""
 
     def ask(self, prompt: str) -> str:
-        """Cached wrapper around `_call`."""
+        """Cached wrapper around `_call`.
+
+        Only real LLM responses are cached — stubs and errors are never written
+        to disk so the live LLM is retried on the next call.
+        """
         cached = _cache_get(prompt)
         if cached is not None:
             return cached
-        out = self._call(prompt)
-        _cache_put(prompt, out)
+        try:
+            out = self._call(prompt)
+        except Exception as exc:
+            # Provider unavailable — return heuristic stub but do NOT cache so
+            # the next call will try the live LLM again.
+            return HeuristicProvider()._call(prompt) + f"\n[llm error: {exc}]"
+        _cache_put(prompt, out)  # _cache_put silently skips stubs/errors
         return out
 
     def ask_json(self, prompt: str, fallback: dict) -> dict:
@@ -407,10 +437,22 @@ class LLMProvider(ABC):
     def interpret_query(self, query: str, candidates: List[str]) -> List[str]:
         if not candidates:
             return []
+        # Pre-filter: prioritise names that share tokens with the query so the
+        # LLM prompt stays small (faster inference on the first/uncached call).
+        q_tokens = {t.lower() for t in query.replace("?", " ").split() if len(t) > 2}
+        if q_tokens:
+            scored = sorted(
+                candidates,
+                key=lambda n: sum(1 for t in q_tokens if t in n.lower()),
+                reverse=True,
+            )
+        else:
+            scored = candidates
+        shortlist = scored[:30]  # send at most 30 names to the LLM
         raw = self.ask(textwrap.dedent(f"""
             User query: {query}
             Candidate symbols (one per line):
-            {chr(10).join(candidates[:60])}
+            {chr(10).join(shortlist)}
 
             Return up to 10 most relevant symbol names, one per line, no commentary.
         """).strip())
@@ -789,28 +831,26 @@ class OllamaProvider(LLMProvider):
         print(f"[Ollama] host={self.host}  model={self.model}")
 
     def _call(self, prompt: str) -> str:
-        try:
-            resp = requests.post(
-                f"{self.host}/api/generate",
-                json={
-                    "model": self.model,
-                    "prompt": prompt,
-                    "stream": False,
-                    "options": {
-                        "num_predict": 512,   # max tokens
-                        "temperature": 0.2,   # low temp for deterministic code answers
-                    },
+        """Call Ollama.  Raises on any failure so `ask()` can skip caching."""
+        resp = requests.post(
+            f"{self.host}/api/generate",
+            json={
+                "model": self.model,
+                "prompt": prompt,
+                "stream": False,
+                "options": {
+                    "num_predict": 512,   # max tokens
+                    "temperature": 0.2,   # low temp for deterministic code answers
                 },
-                timeout=300,  # local models can be slow on first call
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            text = data.get("response", "").strip()
-            return text if text else HeuristicProvider()._call(prompt)
-        except requests.exceptions.Timeout:
-            return HeuristicProvider()._call(prompt) + "\n[ollama error: request timed out]"
-        except Exception as e:
-            return HeuristicProvider()._call(prompt) + f"\n[ollama error: {e}]"
+            },
+            timeout=300,  # 5 min — models can be slow on first/cold call
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        text = data.get("response", "").strip()
+        if not text:
+            raise ValueError("Ollama returned an empty response")
+        return text
 
 
 # ---------------------------------------------------------------------------
@@ -829,18 +869,18 @@ class BobProvider(LLMProvider):
         self.api_url = api_url or os.environ.get("BOB_API_URL", "https://bob.ibm.com/api/v1/generate")
 
     def _call(self, prompt: str) -> str:
-        try:
-            resp = requests.post(
-                self.api_url,
-                headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
-                json={"prompt": prompt, "max_tokens": 400},
-                timeout=30,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            return data.get("text") or data.get("output") or HeuristicProvider()._call(prompt)
-        except Exception as e:
-            return HeuristicProvider()._call(prompt) + f"\n[bob error: {e}]"
+        resp = requests.post(
+            self.api_url,
+            headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
+            json={"prompt": prompt, "max_tokens": 400},
+            timeout=30,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        text = data.get("text") or data.get("output") or ""
+        if not text:
+            raise ValueError("Bob returned an empty response")
+        return text
 
 
 # ---------------------------------------------------------------------------
@@ -859,25 +899,22 @@ class AnthropicProvider(LLMProvider):
         self.model = model or os.environ.get("ANTHROPIC_MODEL", "claude-3-5-haiku-20241022")
 
     def _call(self, prompt: str) -> str:
-        try:
-            resp = requests.post(
-                "https://api.anthropic.com/v1/messages",
-                headers={
-                    "x-api-key": self.api_key,
-                    "anthropic-version": "2023-06-01",
-                    "content-type": "application/json",
-                },
-                json={
-                    "model": self.model,
-                    "max_tokens": 512,
-                    "messages": [{"role": "user", "content": prompt}],
-                },
-                timeout=30,
-            )
-            resp.raise_for_status()
-            return resp.json()["content"][0]["text"]
-        except Exception as e:
-            return HeuristicProvider()._call(prompt) + f"\n[claude error: {e}]"
+        resp = requests.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={
+                "x-api-key": self.api_key,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            },
+            json={
+                "model": self.model,
+                "max_tokens": 512,
+                "messages": [{"role": "user", "content": prompt}],
+            },
+            timeout=30,
+        )
+        resp.raise_for_status()
+        return resp.json()["content"][0]["text"]
 
 
 # ---------------------------------------------------------------------------
@@ -898,21 +935,18 @@ class OpenAIProvider(LLMProvider):
         self.model = model or os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
 
     def _call(self, prompt: str) -> str:
-        try:
-            resp = requests.post(
-                f"{self.base_url}/chat/completions",
-                headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
-                json={
-                    "model": self.model,
-                    "messages": [{"role": "user", "content": prompt}],
-                    "max_tokens": 512,
-                },
-                timeout=30,
-            )
-            resp.raise_for_status()
-            return resp.json()["choices"][0]["message"]["content"]
-        except Exception as e:
-            return HeuristicProvider()._call(prompt) + f"\n[openai error: {e}]"
+        resp = requests.post(
+            f"{self.base_url}/chat/completions",
+            headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
+            json={
+                "model": self.model,
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": 512,
+            },
+            timeout=30,
+        )
+        resp.raise_for_status()
+        return resp.json()["choices"][0]["message"]["content"]
 
 
 class CopilotProvider(OpenAIProvider):
@@ -927,25 +961,22 @@ class CopilotProvider(OpenAIProvider):
 
     def _call(self, prompt: str) -> str:
         # Copilot requires an extra header
-        try:
-            resp = requests.post(
-                f"{self.base_url}/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {self.api_key}",
-                    "Content-Type": "application/json",
-                    "Copilot-Integration-Id": "flowify",
-                },
-                json={
-                    "model": self.model,
-                    "messages": [{"role": "user", "content": prompt}],
-                    "max_tokens": 512,
-                },
-                timeout=30,
-            )
-            resp.raise_for_status()
-            return resp.json()["choices"][0]["message"]["content"]
-        except Exception as e:
-            return HeuristicProvider()._call(prompt) + f"\n[copilot error: {e}]"
+        resp = requests.post(
+            f"{self.base_url}/chat/completions",
+            headers={
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+                "Copilot-Integration-Id": "flowify",
+            },
+            json={
+                "model": self.model,
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": 512,
+            },
+            timeout=30,
+        )
+        resp.raise_for_status()
+        return resp.json()["choices"][0]["message"]["content"]
 
 
 class OpenClawProvider(OpenAIProvider):
