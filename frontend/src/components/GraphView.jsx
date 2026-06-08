@@ -10,6 +10,21 @@ import dagre from "@dagrejs/dagre";
 import { useFlowStore } from "../store.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Semantic kind → visual config
+// ─────────────────────────────────────────────────────────────────────────────
+const SEMANTIC_KIND_CONFIG = {
+  EXPOSES_API:    { color: "#10b981", label: "API",   icon: "🔌", edgeColor: "#10b981" },
+  USES_DB:        { color: "#8b5cf6", label: "DB",    icon: "🗄️",  edgeColor: "#8b5cf6" },
+  EMITS_EVENT:    { color: "#f59e0b", label: "Event", icon: "📤", edgeColor: "#f59e0b" },
+  CONSUMES_EVENT: { color: "#ef4444", label: "Sub",   icon: "📥", edgeColor: "#ef4444" },
+  CALLS:          { color: "#3b82f6", label: null,    icon: null,  edgeColor: "#2a3f5a" },
+};
+
+function getSemanticConfig(kind) {
+  return SEMANTIC_KIND_CONFIG[kind] || SEMANTIC_KIND_CONFIG.CALLS;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Icons (inline SVG, no external dep)
 // ─────────────────────────────────────────────────────────────────────────────
 const FileIcon = () => (
@@ -43,7 +58,9 @@ const ChevronDown = () => (
 // Custom node types
 // ─────────────────────────────────────────────────────────────────────────────
 function FileNodeComponent({ data }) {
-  const { label, filePath, fnCount, isExpanded, isHighlighted, isSelected } = data;
+  const { label, filePath, fnCount, description, isExpanded, isHighlighted, isSelected } = data;
+  // Don't show description if it's just the file path repeated
+  const showDesc = description && description !== filePath && !description.startsWith("backend/") && !description.startsWith("frontend/") && !description.startsWith("tests/");
 
   return (
     <div
@@ -56,7 +73,7 @@ function FileNodeComponent({ data }) {
           ? "border-blue-400 shadow-[0_0_16px_rgba(59,130,246,0.3)]"
           : "border-blue-800/60 hover:border-blue-500/80 shadow-[0_2px_12px_rgba(0,0,0,0.4)]",
       ].join(" ")}
-      style={{ minWidth: 180, maxWidth: 260 }}
+      style={{ minWidth: 180, maxWidth: 280 }}
     >
       <Handle type="target" position={Position.Left} className="!bg-blue-500 !border-blue-700 !w-2 !h-2" />
 
@@ -72,6 +89,9 @@ function FileNodeComponent({ data }) {
         {filePath && (
           <div className="text-[10px] text-blue-300/50 mt-0.5 truncate">{filePath}</div>
         )}
+        {showDesc && (
+          <div className="text-[10px] text-blue-200/60 mt-1.5 italic leading-snug line-clamp-2">{description}</div>
+        )}
         {fnCount > 0 && (
           <div className="mt-2 inline-flex items-center gap-1 text-[10px] text-blue-300/60 bg-blue-900/30 rounded-full px-2 py-0.5">
             <FnIcon />{fnCount} symbols
@@ -85,12 +105,17 @@ function FileNodeComponent({ data }) {
 }
 
 function FunctionNodeComponent({ data }) {
-  const { label, kind, isHighlighted, isSelected, isExpanded, hasCallees } = data;
+  const { label, kind, description, isHighlighted, isSelected, isExpanded, hasCallees, semanticKind } = data;
 
   const isClass = kind === "class";
+  const semCfg = getSemanticConfig(semanticKind || "CALLS");
   const accent = isClass
-    ? { border: "border-emerald-700/60", hoverBorder: "hover:border-emerald-500/80", text: "text-emerald-400", bg: "from-emerald-950/80 to-emerald-900/30", badge: "text-emerald-400/60 bg-emerald-900/30" }
-    : { border: "border-indigo-800/60", hoverBorder: "hover:border-indigo-500/80", text: "text-indigo-400", bg: "from-indigo-950/80 to-indigo-900/30", badge: "text-indigo-400/60 bg-indigo-900/30" };
+    ? { border: "border-emerald-700/60", hoverBorder: "hover:border-emerald-500/80", text: "text-emerald-400", bg: "from-emerald-950/80 to-emerald-900/30" }
+    : { border: "border-indigo-800/60", hoverBorder: "hover:border-indigo-500/80", text: "text-indigo-400", bg: "from-indigo-950/80 to-indigo-900/30" };
+
+  const borderStyle = semCfg.label ? { borderColor: `${semCfg.color}60` } : {};
+  // Show description only if it's a real one (not a file path, not a stub)
+  const showDesc = description && !description.startsWith("(stub)") && description.length > 4;
 
   return (
     <div
@@ -103,7 +128,7 @@ function FunctionNodeComponent({ data }) {
           ? `border-opacity-100 ${accent.border.replace('/60','')}`
           : `${accent.border} ${accent.hoverBorder} shadow-[0_1px_8px_rgba(0,0,0,0.3)]`,
       ].join(" ")}
-      style={{ minWidth: 150, maxWidth: 230 }}
+      style={{ minWidth: 160, maxWidth: 260, ...(!isHighlighted && !isSelected ? borderStyle : {}) }}
     >
       <Handle type="target" position={Position.Left} className="!bg-indigo-500 !border-indigo-700 !w-1.5 !h-1.5" />
 
@@ -113,6 +138,14 @@ function FunctionNodeComponent({ data }) {
           <span className={`text-[9px] uppercase tracking-wider font-semibold ${accent.text} opacity-70`}>
             {kind || "fn"}
           </span>
+          {semCfg.label && (
+            <span
+              className="ml-1 text-[8px] font-bold px-1 rounded"
+              style={{ background: `${semCfg.color}22`, color: semCfg.color }}
+            >
+              {semCfg.icon} {semCfg.label}
+            </span>
+          )}
           {hasCallees && (
             <span className="ml-auto shrink-0 text-slate-500">
               {isExpanded ? <ChevronDown /> : <ChevronRight />}
@@ -120,6 +153,9 @@ function FunctionNodeComponent({ data }) {
           )}
         </div>
         <div className="font-mono text-xs text-white/90 truncate leading-snug">{label}</div>
+        {showDesc && (
+          <div className="text-[10px] text-slate-400/80 mt-1 italic leading-snug line-clamp-2">{description}</div>
+        )}
       </div>
 
       <Handle type="source" position={Position.Right} className="!bg-indigo-500 !border-indigo-700 !w-1.5 !h-1.5" />
@@ -225,7 +261,7 @@ function GraphViewInner() {
     return map;
   }, [visibleNodes]);
 
-  // Build RF edges (with CONTAINS fan-out pruning)
+  // Build RF edges (with CONTAINS fan-out pruning + semantic kind coloring)
   const rfEdges = useMemo(() => {
     const hl = new Set(highlight);
     return Object.values(visibleEdges).map((e) => {
@@ -241,27 +277,36 @@ function GraphViewInner() {
         }
       }
 
+      // Color edge by the TARGET node's semantic kind
+      const targetNode = visibleNodes[e.target];
+      const targetSemanticKind = targetNode?.adapter_metadata?.semantic_kind || "CALLS";
+      const semCfg = getSemanticConfig(targetSemanticKind);
+      const baseEdgeColor = (isContains || !semCfg.label)
+        ? (isFlow ? "#3b82f6" : "#2a3f5a")
+        : semCfg.edgeColor;
+
       return {
         id: e.id,
         source: e.source,
         target: e.target,
         animated: isHighlightedEdge,
         type: "smoothstep",
+        label: (!isContains && semCfg.label && !isHighlightedEdge) ? semCfg.label : undefined,
+        labelStyle: { fill: semCfg.color, fontSize: 8, fontWeight: 600 },
+        labelBgStyle: { fill: "#07090f", fillOpacity: 0.8 },
         style: {
           stroke: isContains
             ? "#1e3a5a"
             : isHighlightedEdge
             ? "#f59e0b"
-            : isFlow
-            ? "#3b82f6"
-            : "#2a3f5a",
+            : baseEdgeColor,
           strokeDasharray: isContains ? "5 4" : undefined,
-          strokeWidth: isHighlightedEdge ? 2.5 : isFlow ? 1.5 : 1,
+          strokeWidth: isHighlightedEdge ? 2.5 : isFlow ? 1.5 : (semCfg.label ? 1.5 : 1),
           opacity: isContains ? 0.5 : 0.8,
         },
       };
     }).filter(Boolean);
-  }, [visibleEdges, childrenOf, highlight]);
+  }, [visibleEdges, visibleNodes, childrenOf, highlight]);
 
   // All edges for dagre layout (no pruning — every child needs an edge to be ranked)
   const dagreEdges = useMemo(
@@ -289,14 +334,16 @@ function GraphViewInner() {
         type: isFile ? "fileNode" : "functionNode",
         position: n.position,
         data: {
-          label:       n.label,
-          filePath:    isFile ? n.file_path || n.description : null,
-          fnCount:     n.function_count ?? 0,
-          kind:        n.type || n.kind,
+          label:        n.label,
+          filePath:     isFile ? n.file_path || n.description : null,
+          description:  isFile ? null : (n.description || null),
+          fnCount:      n.function_count ?? 0,
+          kind:         n.type || n.kind,
+          semanticKind: n.adapter_metadata?.semantic_kind || "CALLS",
           isExpanded,
           isHighlighted,
           isSelected,
-          hasCallees:  (childrenOf[n.id]?.length ?? 0) === 0 && !isExpanded,
+          hasCallees:  isExpanded || (childrenOf[n.id]?.length ?? 0) > 0,
           raw: n,
         },
       };
