@@ -1,5 +1,6 @@
 """End-to-end ingestion pipeline (called from API endpoints)."""
 from __future__ import annotations
+from pathlib import Path
 from typing import Dict
 
 import networkx as nx
@@ -12,10 +13,39 @@ def _is_callable(node: FunctionNode) -> bool:
     return node.kind in ("function", "callable") or node.type in ("function", "method")
 
 
+_STUB_PREFIXES = ("(stub) ", "(stub)")
+
+def _is_stub(s: str | None, node: "FunctionNode | None" = None) -> bool:
+    """Return True if the summary is absent, a raw stub, or a heuristic placeholder.
+
+    A node whose summary was produced by the heuristic provider is flagged via
+    adapter_metadata["summary_source"] == "heuristic".  We treat those as stubs
+    so they are overwritten when a real LLM becomes available.
+    """
+    if not s:
+        return True
+    if any(s.startswith(p) for p in _STUB_PREFIXES):
+        return True
+    if node is not None:
+        return node.adapter_metadata.get("summary_source") == "heuristic"
+    return False
+
 def _summarize_functions(nodes: list[FunctionNode]) -> None:
+    """Generate 1-line descriptions for callable nodes that lack a real summary."""
+    provider = bob_client.get_provider()
+    is_real_llm = not getattr(provider, "_is_heuristic", False)
     for n in nodes:
-        if _is_callable(n) and n.code_snippet and not n.summary:
-            n.summary = bob_client.summarize_function(n.name, n.code_snippet)
+        if not _is_callable(n) or not n.code_snippet:
+            continue
+        if not _is_stub(n.summary, n):
+            continue
+        n.summary = provider.summarize_function(
+            n.name,
+            n.code_snippet,
+            kind=n.kind or n.type or "function",
+        )
+        # Tag the source so future calls can detect heuristic-generated summaries
+        n.adapter_metadata["summary_source"] = "llm" if is_real_llm else "heuristic"
 
 
 def _analyze_semantics(
@@ -30,6 +60,7 @@ def _analyze_semantics(
     print(f"[Phase 2] Performing semantic analysis on {len(nodes)} functions...")
     semantic_edges = []
     analyzed_count = 0
+    callable_count = sum(1 for n in nodes if _is_callable(n))
     
     for n in nodes:
         if not _is_callable(n) or not n.code_snippet:
@@ -84,7 +115,7 @@ def _analyze_semantics(
         
         analyzed_count += 1
         if analyzed_count % 10 == 0:
-            print(f"  - Analyzed {analyzed_count}/{len([n for n in nodes if _is_callable(n)])} functions")
+            print(f"  - Analyzed {analyzed_count}/{callable_count} functions")
     
     print(f"  - Semantic analysis complete: {analyzed_count} functions, {len(semantic_edges)} semantic edges")
     return semantic_edges
@@ -178,7 +209,6 @@ def update(graph_id: str) -> GraphPayload | None:
     if not changed:
         return payload
     # Re-ingest changed files only.
-    from pathlib import Path
     repo_root = Path(payload.repo_path).resolve()
     keep_nodes = [n for n in payload.function_nodes if n.file_path not in changed]
     kept_ids = {n.id for n in keep_nodes}
@@ -228,11 +258,12 @@ def update(graph_id: str) -> GraphPayload | None:
     
     # Phase 2: Semantic analysis on new/changed nodes
     repo_context_dict = storage.load_meta(graph_id, "repo_context") or {}
+    try:
+        repo_context = RepositoryContext(**repo_context_dict) if repo_context_dict else RepositoryContext(fallback_used=True)
+    except Exception:
+        repo_context = RepositoryContext(fallback_used=True)
     if repo_context_dict:
-        repo_context = RepositoryContext(**repo_context_dict)
         new_semantic_edges = _analyze_semantics(new_nodes, g, repo_context)
-        
-        # Merge with existing semantic edges — drop any whose source OR target was removed.
         keep_semantic_edges = [
             e for e in payload.semantic_edges
             if e.source_id in kept_ids and e.target_id in kept_ids
@@ -251,19 +282,11 @@ def update(graph_id: str) -> GraphPayload | None:
                 g.nodes[n.id]["criticality"] = n.semantics.criticality
 
     # Build modules with entry point detection and control flow analysis
-    declared_eps = None
-    if repo_context_dict:
-        try:
-            repo_context = RepositoryContext(**repo_context_dict)
-            declared_eps = repo_context.key_entry_points
-        except Exception:
-            pass
-    
     module_nodes, module_edges, mod_to_funcs = module_abstractor.build_modules(
         g,
         function_nodes=merged_nodes,
         function_edges=merged_edges,
-        declared_entry_points=declared_eps,
+        declared_entry_points=repo_context.key_entry_points,
     )
     payload = GraphPayload(
         graph_id=graph_id,
@@ -276,11 +299,6 @@ def update(graph_id: str) -> GraphPayload | None:
         semantic_edges=merged_semantic_edges,
     )
     storage.save(payload)
-    repo_context_dict = storage.load_meta(graph_id, "repo_context") or {}
-    try:
-        repo_context = RepositoryContext(**repo_context_dict) if repo_context_dict else RepositoryContext(fallback_used=True)
-    except Exception:
-        repo_context = RepositoryContext(fallback_used=True)
     llm_result, llm_prompt = llm_ingestion.ingest_ast_results(
         repo_context,
         merged_nodes,

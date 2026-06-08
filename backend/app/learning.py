@@ -58,7 +58,6 @@ def record_query(
     # Create query pattern
     query_pattern = QueryPattern(
         query_text=query,
-        normalized_query=_normalize_query(query),
         graph_id=graph_id,
         retrieved_nodes=retrieved_nodes,
         response_time_ms=response_time_ms,

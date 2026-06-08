@@ -2,6 +2,7 @@
 
 Select a provider via the LLM_PROVIDER environment variable:
 
+    LLM_PROVIDER=ollama     Ollama (local, no key needed — http://localhost:11434)
     LLM_PROVIDER=bob        IBM Bob / watsonx (BOB_API_KEY + BOB_API_URL)
     LLM_PROVIDER=claude     Anthropic Claude  (ANTHROPIC_API_KEY, opt. ANTHROPIC_MODEL)
     LLM_PROVIDER=openai     OpenAI / Codex    (OPENAI_API_KEY, opt. OPENAI_BASE_URL, OPENAI_MODEL)
@@ -9,8 +10,18 @@ Select a provider via the LLM_PROVIDER environment variable:
     LLM_PROVIDER=openclaw   OpenClaw          (OPENCLAW_API_KEY + OPENCLAW_API_URL)
     LLM_PROVIDER=heuristic  No LLM (always available, deterministic stubs)
 
-If LLM_PROVIDER is not set, the first provider whose API key is present in the
-environment is used. If no key is found, falls back to heuristic stubs.
+Ollama-specific env vars (all optional):
+    OLLAMA_HOST    Base URL of the Ollama server  (default: http://localhost:11434)
+    OLLAMA_MODEL   Model to use                   (default: auto-picked from installed models)
+
+Auto-detection order (when LLM_PROVIDER is not set):
+    1. Ollama running on localhost:11434  (no key needed)
+    2. BOB_API_KEY present
+    3. ANTHROPIC_API_KEY present
+    4. OPENAI_API_KEY present
+    5. GITHUB_TOKEN present
+    6. OPENCLAW_API_KEY present
+    7. Heuristic stubs
 
 All providers share the same disk cache (keyed by prompt hash) and expose the
 same high-level interface so the rest of the pipeline is completely unaware of
@@ -241,7 +252,6 @@ def _heuristic_repo_analysis(repo_path: str) -> dict:
         "purpose": purpose or f"A {project_type} project",
         "key_entry_points": _discover_entry_points(root),
         "critical_modules": dirs[:5],
-        "data_flow_pattern": None,
         "confidence": 0.5,
         "fallback_used": True,
     }
@@ -294,7 +304,7 @@ def _heuristic_semantic_analysis(name: str, code: str, repo_context: dict) -> di
     return {
         "intent": intent, "complexity": complexity, "criticality": criticality,
         "patterns": patterns, "side_effects": effects,
-        "data_flow": None, "confidence": 0.4,
+        "confidence": 0.4,
     }
 
 
@@ -330,17 +340,23 @@ class LLMProvider(ABC):
 
     # -- high-level methods used by the pipeline ------------------------------
 
-    def summarize_function(self, name: str, code: str) -> str:
-        return self.ask(textwrap.dedent(f"""
-            You are summarizing a code function for a software map.
-            Function: {name}
+    def summarize_function(self, name: str, code: str, kind: str = "function") -> str:
+        """Return exactly one sentence describing what this function/class does."""
+        raw = self.ask(textwrap.dedent(f"""
+            You are producing a one-line description for a code map.
+            {kind.capitalize()}: {name}
 
             ```
-            {code[:1500]}
+            {code[:1200]}
             ```
 
-            Provide a concise one-sentence functional description (no implementation detail).
+            Reply with exactly ONE sentence (≤20 words) starting with a verb.
+            Describe what it does, not how. No markdown, no bullet points.
         """).strip()).strip()
+        # Keep only the first sentence, strip markdown artefacts
+        raw = re.sub(r"^[*`#\-\s]+", "", raw)
+        first = re.split(r"(?<=[.!?])\s+", raw)[0]
+        return first[:200] if first else raw[:200]
 
     def summarize_module(self, name_hint: str, summaries: List[str]) -> dict:
         joined = "\n".join(f"- {s}" for s in summaries[:30])
@@ -360,16 +376,32 @@ class LLMProvider(ABC):
         except Exception:
             return {"name": name_hint, "description": (raw.splitlines()[0][:200] if raw else "")}
 
-    def explain_flow(self, query: str, summaries: List[str]) -> str:
+    def explain_flow_with_graph(
+        self,
+        query: str,
+        summaries: List[str],
+        edge_info: Optional[List[str]] = None,
+    ) -> str:
+        """Graph-grounded explanation — explicitly cites graph edges and node roles."""
         joined = "\n".join(f"{i+1}. {s}" for i, s in enumerate(summaries))
+        edge_block = ""
+        if edge_info:
+            edge_block = "\n\nGraph edges (call relationships):\n" + "\n".join(edge_info[:12])
         return self.ask(textwrap.dedent(f"""
+            You are answering a developer question using a repository knowledge graph.
+            The answer is grounded in the actual call graph and semantic metadata — not source file text.
+
             Question: {query}
 
-            The following ordered functions form the relevant execution path:
-            {joined}
+            Repository knowledge graph — relevant nodes (ordered by execution flow):
+            {joined}{edge_block}
 
-            Explain the end-to-end flow at an abstract level (no pseudo-code).
-            Highlight inputs, transformations, and outputs.
+            Using ONLY the graph data above, explain:
+            1. Which component handles the request first and why
+            2. The call chain through the codebase (reference node names directly)
+            3. Any DB access, event emission, or API exposure visible in the graph
+
+            Be specific about function names. Say "according to the graph" to reinforce grounding.
         """).strip()).strip()
 
     def interpret_query(self, query: str, candidates: List[str]) -> List[str]:
@@ -378,7 +410,7 @@ class LLMProvider(ABC):
         raw = self.ask(textwrap.dedent(f"""
             User query: {query}
             Candidate symbols (one per line):
-            {chr(10).join(candidates[:200])}
+            {chr(10).join(candidates[:60])}
 
             Return up to 10 most relevant symbol names, one per line, no commentary.
         """).strip())
@@ -458,7 +490,6 @@ class LLMProvider(ABC):
                     "purpose": result.get("purpose", heuristic["purpose"]),
                     "key_entry_points": entry_points,
                     "critical_modules": heuristic["critical_modules"],
-                    "data_flow_pattern": result.get("data_flow_pattern"),
                     "confidence": 0.85,
                     "fallback_used": False,
                 }
@@ -528,12 +559,134 @@ class LLMProvider(ABC):
 # Heuristic-only provider (no LLM)
 # ---------------------------------------------------------------------------
 
+def _heuristic_one_liner(name: str, kind: str = "function") -> str:
+    """Derive a readable 1-line description from a symbol name (name-only fallback)."""
+    clean = re.sub(r"^(test_|_)", "", name)
+    parts = [p for p in re.split(r"[_.\s]|(?<=[a-z])(?=[A-Z])", clean) if p]
+    if not parts:
+        return f"{kind.capitalize()} {name}."
+    words = [parts[0].capitalize()] + [p.lower() for p in parts[1:]]
+    verb = words[0]
+    rest = " ".join(words[1:])
+    verb_map = {
+        "Get": "Returns", "Set": "Sets", "Build": "Builds", "Create": "Creates",
+        "Init": "Initializes", "Load": "Loads", "Save": "Saves", "Parse": "Parses",
+        "Run": "Runs", "Start": "Starts", "Stop": "Stops", "Handle": "Handles",
+        "Process": "Processes", "Generate": "Generates", "Validate": "Validates",
+        "Update": "Updates", "Delete": "Deletes", "Find": "Finds", "Check": "Checks",
+        "Compute": "Computes", "Analyze": "Analyzes", "Fetch": "Fetches",
+        "Expand": "Expands", "Ingest": "Ingests", "Serialize": "Serializes",
+        "Send": "Sends", "Read": "Reads", "Write": "Writes", "Format": "Formats",
+        "Convert": "Converts", "Extract": "Extracts", "Register": "Registers",
+    }
+    verb = verb_map.get(verb, verb + "s" if not verb.endswith("s") else verb)
+    desc = f"{verb} {rest}." if rest else f"{verb} {kind}."
+    return desc[:120]
+
+
+def _code_based_description(name: str, code: str, kind: str = "function") -> str:
+    """Derive a 1-line description by analysing actual code content.
+
+    Priority:
+    1. Docstring first sentence (most reliable — written by the author)
+    2. AST analysis: return type + notable function calls + yield/raise patterns
+    3. Name-only heuristic fallback
+    """
+    # ── 1. Extract docstring ─────────────────────────────────────────────────
+    try:
+        tree = ast.parse(code)
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                doc = ast.get_docstring(node)
+                if doc:
+                    first = re.split(r"(?<=[.!?])\s+|\n", doc.strip())[0].strip()
+                    if first and len(first) > 10:
+                        return (first if first.endswith((".", "!", "?")) else first + ".")[:200]
+                break
+    except Exception:
+        pass
+
+    # ── 2. AST analysis: return type + notable calls + patterns ─────────────
+    _SKIP = {
+        "print", "len", "str", "int", "float", "bool", "list", "dict", "set",
+        "isinstance", "hasattr", "getattr", "setattr", "range", "enumerate",
+        "zip", "map", "filter", "sorted", "reversed", "super", "type",
+        "append", "extend", "update", "get", "items", "values", "keys",
+        "lower", "upper", "strip", "split", "join", "format", "encode",
+        "decode", "open", "close", "read", "write", "logger", "log",
+    }
+    try:
+        tree = ast.parse(code)
+
+        # Return type annotation
+        ret_hint = ""
+        is_async = False
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                is_async = isinstance(node, ast.AsyncFunctionDef)
+                if node.returns:
+                    try:
+                        ret_hint = ast.unparse(node.returns)
+                    except Exception:
+                        pass
+                break
+
+        # Notable calls (skip builtins; de-duplicate; max 3)
+        call_names: list[str] = []
+        seen: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                try:
+                    cn = ast.unparse(node.func).split(".")[-1]
+                except Exception:
+                    continue
+                if cn not in _SKIP and cn not in seen and not cn.startswith("_"):
+                    seen.add(cn)
+                    call_names.append(cn)
+            if len(call_names) >= 3:
+                break
+
+        has_yield = any(isinstance(n, (ast.Yield, ast.YieldFrom)) for n in ast.walk(tree))
+        has_raise = any(isinstance(n, ast.Raise) for n in ast.walk(tree))
+
+        base = _heuristic_one_liner(name, kind).rstrip(".")
+
+        extras: list[str] = []
+        if is_async:
+            extras.append("async")
+        if has_yield:
+            extras.append("yields results lazily")
+        elif ret_hint and ret_hint not in ("None", "bool", "Any"):
+            extras.append(f"returns {ret_hint}")
+        if call_names:
+            extras.append("using " + ", ".join(call_names))
+        if has_raise:
+            extras.append("raises on invalid input")
+
+        if extras:
+            return (base + " (" + "; ".join(extras) + ").")[:200]
+        return base + "."
+
+    except Exception:
+        pass
+
+    # ── 3. Name-only fallback ────────────────────────────────────────────────
+    return _heuristic_one_liner(name, kind)
+
+
 class HeuristicProvider(LLMProvider):
     """Pure heuristic stubs — no network calls, always available."""
+
+    _is_heuristic: bool = True  # sentinel checked by pipeline._summarize_functions
 
     def _call(self, prompt: str) -> str:
         head = prompt.strip().splitlines()[0] if prompt.strip() else ""
         return f"(stub) {head[:120]}"
+
+    def summarize_function(self, name: str, code: str, kind: str = "function") -> str:  # type: ignore[override]
+        if code and code.strip():
+            return _code_based_description(name, code, kind)
+        return _heuristic_one_liner(name, kind)
 
     def interpret_query(self, query: str, candidates: List[str]) -> List[str]:
         q_tokens = {t.lower() for t in query.replace("?", " ").split() if len(t) > 2}
@@ -548,6 +701,116 @@ class HeuristicProvider(LLMProvider):
 
     def analyze_function_semantics(self, name, code, repo_context, neighbors=None) -> dict:
         return _heuristic_semantic_analysis(name, code, repo_context)
+
+    def explain_flow_with_graph(self, query: str, summaries: List[str], edge_info: Optional[List[str]] = None) -> str:
+        if not summaries:
+            return "(stub) No relevant functions found in the graph."
+        names = [s.split("(")[0].strip() for s in summaries[:5]]
+        chain = " → ".join(names)
+        return f"(stub) According to the graph, the execution path for '{query}' is: {chain}"
+
+
+# ---------------------------------------------------------------------------
+# Ollama provider  (local, no API key required)
+# ---------------------------------------------------------------------------
+
+# Preferred model names for code tasks, tried in order against installed models
+_OLLAMA_CODE_MODELS = [
+    "codellama", "codellama:13b", "codellama:7b",
+    "deepseek-coder", "deepseek-coder:6.7b",
+    "qwen2.5-coder", "qwen2.5-coder:7b",
+    "llama3.2", "llama3.2:3b",
+    "llama3.1", "llama3",
+    "mistral", "phi3", "gemma2",
+]
+
+
+def _ollama_running(host: str) -> bool:
+    """Return True if Ollama is reachable at *host*."""
+    try:
+        r = requests.get(f"{host}/api/tags", timeout=2)
+        return r.status_code == 200
+    except Exception:
+        return False
+
+
+def _ollama_best_model(host: str, preferred: str | None = None) -> str | None:
+    """Return the best available code model, or None if Ollama has nothing installed."""
+    try:
+        data = requests.get(f"{host}/api/tags", timeout=3).json()
+        installed = {m["name"].split(":")[0].lower() for m in data.get("models", [])}
+        installed_full = [m["name"] for m in data.get("models", [])]
+    except Exception:
+        return None
+
+    # Honour explicit preference first
+    if preferred:
+        for m in installed_full:
+            if m.lower().startswith(preferred.lower()):
+                return m
+        return preferred  # trust the user even if we can't confirm
+
+    # Walk priority list
+    for candidate in _OLLAMA_CODE_MODELS:
+        base = candidate.split(":")[0].lower()
+        if base in installed:
+            # Return the full tag if we have an exact match, else just the base
+            for m in installed_full:
+                if m.lower().startswith(base):
+                    return m
+            return candidate
+
+    # Fallback: whatever is first
+    if installed_full:
+        return installed_full[0]
+    return None
+
+
+class OllamaProvider(LLMProvider):
+    """Ollama local LLM — no API key needed.
+
+    Calls POST /api/generate with stream=false.
+    Model is auto-selected from installed models (prefers code-focused models).
+
+    Environment variables:
+        OLLAMA_HOST   (default: http://localhost:11434)
+        OLLAMA_MODEL  (default: auto-picked)
+    """
+
+    def __init__(
+        self,
+        host: str | None = None,
+        model: str | None = None,
+    ) -> None:
+        self.host = (host or os.environ.get("OLLAMA_HOST", "http://localhost:11434")).rstrip("/")
+        # Resolve model: explicit arg > env var > auto-pick
+        explicit = model or os.environ.get("OLLAMA_MODEL", "")
+        self.model = _ollama_best_model(self.host, explicit or None) or "llama3"
+        print(f"[Ollama] host={self.host}  model={self.model}")
+
+    def _call(self, prompt: str) -> str:
+        try:
+            resp = requests.post(
+                f"{self.host}/api/generate",
+                json={
+                    "model": self.model,
+                    "prompt": prompt,
+                    "stream": False,
+                    "options": {
+                        "num_predict": 512,   # max tokens
+                        "temperature": 0.2,   # low temp for deterministic code answers
+                    },
+                },
+                timeout=300,  # local models can be slow on first call
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            text = data.get("response", "").strip()
+            return text if text else HeuristicProvider()._call(prompt)
+        except requests.exceptions.Timeout:
+            return HeuristicProvider()._call(prompt) + "\n[ollama error: request timed out]"
+        except Exception as e:
+            return HeuristicProvider()._call(prompt) + f"\n[ollama error: {e}]"
 
 
 # ---------------------------------------------------------------------------
@@ -705,11 +968,13 @@ def get_provider() -> LLMProvider:
 
     Priority:
     1. LLM_PROVIDER env var (explicit choice)
-    2. Auto-detect from available API keys
-    3. Heuristic fallback
+    2. Auto-detect: Ollama on localhost → cloud API keys → heuristic stubs
     """
     name = os.environ.get("LLM_PROVIDER", "").lower().strip()
 
+    # ── Explicit selection ──────────────────────────────────────────────────
+    if name in ("ollama", "local"):
+        return OllamaProvider()
     if name in ("bob", "watsonx", "ibm"):
         return BobProvider()
     if name in ("claude", "anthropic"):
@@ -723,7 +988,13 @@ def get_provider() -> LLMProvider:
     if name == "heuristic":
         return HeuristicProvider()
 
-    # Auto-detect
+    # ── Auto-detect ─────────────────────────────────────────────────────────
+    # 1. Ollama on localhost — preferred because it's free and private
+    _ollama_host = os.environ.get("OLLAMA_HOST", "http://localhost:11434").rstrip("/")
+    if _ollama_running(_ollama_host):
+        return OllamaProvider(host=_ollama_host)
+
+    # 2. Cloud providers (in priority order)
     if os.environ.get("BOB_API_KEY"):
         return BobProvider()
     if os.environ.get("ANTHROPIC_API_KEY"):
@@ -760,14 +1031,14 @@ def ask(prompt: str) -> str:
 def ask_json(prompt: str, fallback: dict) -> dict:
     return _get().ask_json(prompt, fallback)
 
-def summarize_function(name: str, code: str) -> str:
-    return _get().summarize_function(name, code)
+def summarize_function(name: str, code: str, kind: str = "function") -> str:
+    return _get().summarize_function(name, code, kind=kind)
 
 def summarize_module(name_hint: str, summaries: List[str]) -> dict:
     return _get().summarize_module(name_hint, summaries)
 
-def explain_flow(query: str, summaries: List[str]) -> str:
-    return _get().explain_flow(query, summaries)
+def explain_flow_with_graph(query: str, summaries: List[str], edge_info: Optional[List[str]] = None) -> str:
+    return _get().explain_flow_with_graph(query, summaries, edge_info)
 
 def interpret_query(query: str, candidates: List[str]) -> List[str]:
     return _get().interpret_query(query, candidates)
