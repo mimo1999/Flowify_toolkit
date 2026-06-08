@@ -57,6 +57,54 @@ def _call_names(body: str, declared_name: str) -> List[str]:
     return calls
 
 
+def _detect_semantic_kind(name: str, code: str, decorators: list) -> str:
+    """Detect the semantic role of a function from its name, code, and decorators.
+
+    Returns one of: EXPOSES_API | USES_DB | EMITS_EVENT | CONSUMES_EVENT | CALLS
+    """
+    nl = name.lower()
+    cl = code.lower()
+    dec_str = " ".join(str(d) for d in decorators).lower()
+
+    # API endpoint — decorator-based (Flask/FastAPI/Django/Express)
+    api_dec_keywords = {"route", "get", "post", "put", "delete", "patch", "api_view",
+                        "action", "endpoint", "resource", "view", "handler"}
+    api_dec_prefixes = ("app.", "router.", "bp.", "blueprint.", "api.")
+    if (any(k in dec_str for k in api_dec_keywords) or
+            any(d.lower().startswith(p) for d in decorators for p in api_dec_prefixes)):
+        return "EXPOSES_API"
+
+    # DB interaction
+    db_patterns = [
+        "db.", ".session.", "session.query", ".execute(", "cursor.",
+        ".save(", ".create(", ".filter(", ".objects.", ".commit(",
+        "sqlalchemy", "select ", "insert into", "update set", "delete from",
+        "repository.", "dao.", ".find_by", ".find_all", "knex.", "mongoose.",
+    ]
+    if any(p in cl for p in db_patterns):
+        return "USES_DB"
+
+    # Event emission
+    emit_patterns = [
+        ".emit(", ".publish(", ".dispatch(", "send_event(", "fire_event(",
+        ".trigger(", "broadcast(", "event_bus.", "pubsub.", "kafka.produce",
+        "rabbitmq.", ".send_message(", "sns.", "sqs.", "produce(",
+    ]
+    if any(p in cl for p in emit_patterns):
+        return "EMITS_EVENT"
+
+    # Event consumer — decorator or naming convention
+    consumer_dec = {"on_", "listener", "subscriber", "consumer", "event_handler", "@on", "celery"}
+    consumer_name_starts = ("on_", "handle_", "when_", "receive_", "process_event", "consume_")
+    consumer_name_ends = ("_handler", "_listener", "_consumer", "_receiver", "_subscriber")
+    if (any(k in dec_str for k in consumer_dec) or
+            any(nl.startswith(p) for p in consumer_name_starts) or
+            any(nl.endswith(s) for s in consumer_name_ends)):
+        return "CONSUMES_EVENT"
+
+    return "CALLS"
+
+
 def _append_call_edges(
     edges: List[FunctionEdge],
     source_id: str,
@@ -218,16 +266,20 @@ class _Visitor(ast.NodeVisitor):
     def _visit_func(self, node, kind: str):
         qual = self._qual(node.name)
         nid = _node_id(self.file_path, qual)
+        decorators = self._decorators(node)
+        snippet = self._snippet(node)
+        semantic_kind = _detect_semantic_kind(node.name, snippet, decorators)
         self.nodes.append(FunctionNode(
             id=nid, name=node.name, file_path=self.file_path,
             type=kind, kind="function", source_language="python",
             qualified_name=qual, source_span=self._source_span(node),
             signature=self._signature(node),
-            code_snippet=self._snippet(node), lineno=node.lineno,
+            code_snippet=snippet, lineno=node.lineno,
             adapter_metadata={
                 "adapter": "python_ast",
-                "decorators": self._decorators(node),
+                "decorators": decorators,
                 "async": isinstance(node, ast.AsyncFunctionDef),
+                "semantic_kind": semantic_kind,
             },
         ))
         parent = self.qual_stack[-1] if self.qual_stack else "<file>"
@@ -403,13 +455,20 @@ def parse_js_ts_file(
             end_line = _brace_end_line(lines, idx)
             nid = _node_id(rel, qual)
             body = _line_snippet(lines, line_no, end_line)
+            # collect decorators from previous lines (simple JS annotation patterns)
+            js_decorators = []
+            for prev_idx in range(max(0, idx - 3), idx):
+                prev = lines[prev_idx].strip()
+                if prev.startswith("@"):
+                    js_decorators.append(prev[1:])
+            semantic_kind = _detect_semantic_kind(name, body, js_decorators)
             nodes.append(FunctionNode(
                 id=nid, name=name, file_path=rel, type=kind, kind="function",
                 source_language=language, qualified_name=qual,
                 source_span=_source_span_from_lines(line_no, end_line),
                 signature=CIRSignature(type_system="explicit" if language == "typescript" else "dynamic"),
                 code_snippet=body, lineno=line_no,
-                adapter_metadata={"adapter": adapter},
+                adapter_metadata={"adapter": adapter, "semantic_kind": semantic_kind},
             ))
             parent_id = _node_id(rel, owner) if owner else file_id
             edges.append(FunctionEdge(type="DEFINES", relationship="CONTAINS", source_id=parent_id, target_id=nid, adapter_metadata={"adapter": adapter}))
@@ -464,7 +523,8 @@ def parse_java_file(file_path: Path, repo_root: Path) -> Tuple[List[FunctionNode
             end_line = _brace_end_line(lines, idx)
             body = _line_snippet(lines, line_no, end_line)
             nid = _node_id(rel, qual)
-            nodes.append(FunctionNode(id=nid, name=name, file_path=rel, type="method", kind="function", source_language="java", qualified_name=qual, source_span=_source_span_from_lines(line_no, end_line), signature=CIRSignature(type_system="explicit"), code_snippet=body, lineno=line_no, adapter_metadata={"adapter": adapter}))
+            semantic_kind = _detect_semantic_kind(name, body, [])
+            nodes.append(FunctionNode(id=nid, name=name, file_path=rel, type="method", kind="function", source_language="java", qualified_name=qual, source_span=_source_span_from_lines(line_no, end_line), signature=CIRSignature(type_system="explicit"), code_snippet=body, lineno=line_no, adapter_metadata={"adapter": adapter, "semantic_kind": semantic_kind}))
             edges.append(FunctionEdge(type="DEFINES", relationship="CONTAINS", source_id=_node_id(rel, owner), target_id=nid, adapter_metadata={"adapter": adapter}))
             _append_call_edges(edges, nid, body, name, adapter)
 
