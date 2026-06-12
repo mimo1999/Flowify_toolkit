@@ -7,6 +7,8 @@ any method named `bar`.  Good enough for a hackathon visualization.
 """
 from __future__ import annotations
 import ast
+import logging
+import os
 import re
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
@@ -15,6 +17,8 @@ import networkx as nx
 
 from .ingestion import detect_language, iter_source_files
 from .models import CIRSignature, CIRSourceSpan, FunctionNode, FunctionEdge
+
+logger = logging.getLogger(__name__)
 
 
 def _node_id(file_path: str, qualname: str) -> str:
@@ -585,6 +589,83 @@ def parse_c_family_file(
     return nodes, edges
 
 
+def _edges_from_pyan(
+    repo_root: Path,
+    python_files: List[str],
+    node_index: Dict[Tuple[str, str], str],
+) -> List[FunctionEdge]:
+    """Return call edges derived from pyan's static analysis.
+
+    *node_index* maps ``(repo-relative file path, function name)`` → CIR node ID.
+    Any edge whose source or target can't be resolved in the index is silently
+    dropped — pyan picks up more external-library calls than the AST pass, most
+    of which don't have a CIR node.
+
+    Falls back to an empty list on import error or any analysis failure so
+    ingestion can never be broken by pyan.
+    """
+    try:
+        from pyan.analyzer import CallGraphVisitor
+        from pyan.node import Flavor
+    except ImportError:
+        logger.warning("pyan3 not installed — falling back to AST-only edges")
+        return []
+
+    if not python_files:
+        return []
+
+    func_flavors = {Flavor.FUNCTION, Flavor.METHOD, Flavor.CLASSMETHOD, Flavor.STATICMETHOD}
+
+    try:
+        visitor = CallGraphVisitor(python_files, root=str(repo_root))
+    except Exception as exc:
+        logger.warning("pyan analysis failed (%s) — falling back to AST edges", exc)
+        return []
+
+    edges: List[FunctionEdge] = []
+    seen: set = set()
+
+    for caller_node, callee_set in visitor.graph.uses_edges.items():
+        if caller_node.flavor not in func_flavors:
+            continue
+        if not caller_node.defined or not caller_node.filename:
+            continue
+        try:
+            caller_rel = Path(caller_node.filename).relative_to(repo_root).as_posix()
+        except ValueError:
+            continue
+        src_id = node_index.get((caller_rel, caller_node.name))
+        if not src_id:
+            continue
+
+        for callee_node in callee_set:
+            if callee_node.flavor not in func_flavors:
+                continue
+            if not callee_node.defined or not callee_node.filename:
+                continue
+            try:
+                callee_rel = Path(callee_node.filename).relative_to(repo_root).as_posix()
+            except ValueError:
+                continue
+            tgt_id = node_index.get((callee_rel, callee_node.name))
+            if not tgt_id or tgt_id == src_id:
+                continue
+
+            key = (src_id, tgt_id)
+            if key not in seen:
+                seen.add(key)
+                edges.append(FunctionEdge(
+                    type="CALLS",
+                    relationship="INVOKES",
+                    source_id=src_id,
+                    target_id=tgt_id,
+                    adapter_metadata={"source": "pyan"},
+                ))
+
+    logger.info("pyan contributed %d call edges", len(edges))
+    return edges
+
+
 def build_function_graph(repo_path: str) -> Tuple[nx.DiGraph, List[FunctionNode], List[FunctionEdge]]:
     repo_root = Path(repo_path).resolve()
     all_nodes: List[FunctionNode] = []
@@ -639,6 +720,23 @@ def build_function_graph(repo_path: str) -> Tuple[nx.DiGraph, List[FunctionNode]
             resolved.append(e)
 
     all_nodes.extend(external_nodes.values())
+
+    # Optional pyan augmentation — enabled by FLOWIFY_PYTHON_EDGE_BACKEND=pyan
+    if os.environ.get("FLOWIFY_PYTHON_EDGE_BACKEND", "ast").lower() == "pyan":
+        python_files = [
+            str(fp) for fp in iter_source_files(repo_path)
+            if detect_language(fp) == "python"
+        ]
+        pyan_index: Dict[Tuple[str, str], str] = {
+            (n.file_path, n.name): n.id
+            for n in all_nodes
+            if n.source_language == "python" and n.kind in ("function", "callable")
+        }
+        existing_pairs = {(e.source_id, e.target_id) for e in resolved}
+        for e in _edges_from_pyan(repo_root, python_files, pyan_index):
+            if (e.source_id, e.target_id) not in existing_pairs:
+                resolved.append(e)
+                existing_pairs.add((e.source_id, e.target_id))
 
     # Deduplicate edges: the regex extractor fires once per call-site occurrence,
     # so a function that calls foo() in two branches produces two identical edges.
