@@ -350,6 +350,11 @@ class QueryRequest(BaseModel):
         le=5,
         description="Maximum hops for subgraph traversal"
     )
+    conversation_id: Optional[str] = Field(
+        default=None,
+        description="Conversation thread ID for multi-turn context. "
+                    "Omit on first query; pass the returned value on follow-up queries."
+    )
 
 
 class ExecutionStep(BaseModel):
@@ -382,6 +387,7 @@ class QueryResponse(BaseModel):
     subgraph: Dict[str, Any]
     path: List[str]
     query_id: Optional[str] = None
+    conversation_id: Optional[str] = None
     execution_steps: List[ExecutionStep] = Field(
         default_factory=list,
         description="Ordered structured execution path for display"
@@ -405,7 +411,7 @@ class MCPIngestResponse(BaseModel):
 
 class MCPQueryResponse(BaseModel):
     """Normalized response for MCP query_repo tool."""
-    
+
     success: bool
     graph_id: str
     query: str
@@ -419,6 +425,7 @@ class MCPQueryResponse(BaseModel):
         description="Ordered list of function IDs in execution flow"
     )
     query_id: Optional[str] = None
+    conversation_id: Optional[str] = None
     error: Optional[str] = None
 
 

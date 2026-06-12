@@ -384,4 +384,21 @@ def seed_terminology_from_graph(graph_id: str) -> None:
     save_learning_insights(insights)
 
 
+# ── Conversation context ──────────────────────────────────────────────────────
+
+def load_conversation(graph_id: str, conversation_id: str) -> list:
+    """Load conversation turns for *conversation_id* within *graph_id*.
+
+    Returns a list of ``{"query": str, "summary": str}`` dicts, most recent last.
+    Returns an empty list if no turns have been stored yet.
+    """
+    data = storage.load_meta(graph_id, f"conv_{conversation_id}")
+    return (data or {}).get("turns", [])
+
+
+def save_conversation(graph_id: str, conversation_id: str, turns: list) -> None:
+    """Persist conversation turns, keeping only the last 3."""
+    storage.store_meta(graph_id, f"conv_{conversation_id}", {"turns": turns[-3:]})
+
+
 # Made with Bob

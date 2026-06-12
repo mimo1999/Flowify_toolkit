@@ -16,6 +16,7 @@ export const useFlowStore = create((set, get) => ({
   highlightPath: [],
   explanation: "",
   queryId: null,
+  conversationId: null, // persisted across queries in the same session
   queryNodes: [],     // relevant nodes from the last query (for results panel)
   executionSteps: [], // structured execution path from last query
   graphNodesConsulted: 0,
@@ -49,7 +50,7 @@ export const useFlowStore = create((set, get) => ({
       set({
         graphId: graph_id, nodes: {}, edges: {}, expanded: {},
         rootIds: [], selectedId: null, explanation: "", queryNodes: [],
-        executionSteps: [], graphNodesConsulted: 0,
+        executionSteps: [], graphNodesConsulted: 0, conversationId: null,
       });
       await get().loadInitial();
     } catch (e) {
@@ -84,7 +85,11 @@ export const useFlowStore = create((set, get) => ({
     }
   },
   clearSelection: () => set({ selectedId: null, impactData: null }),
-  clearQuery: () => set({ explanation: "", queryNodes: [], highlightPath: [], queryId: null, executionSteps: [], graphNodesConsulted: 0 }),
+  clearQuery: () => set({
+    explanation: "", queryNodes: [], highlightPath: [],
+    queryId: null, conversationId: null,
+    executionSteps: [], graphNodesConsulted: 0,
+  }),
 
   fetchImpact: async (nodeId) => {
     const { graphId } = get();
@@ -211,14 +216,16 @@ export const useFlowStore = create((set, get) => ({
   },
 
   runQuery: async (query) => {
-    const { graphId } = get();
+    const { graphId, conversationId } = get();
     if (!graphId || !query) return;
     set({ loading: true, error: "" });
     try {
+      const body = { graph_id: graphId, query, depth: 2 };
+      if (conversationId) body.conversation_id = conversationId;
       const r = await fetch(`${API}/query`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ graph_id: graphId, query, depth: 2 }),
+        body: JSON.stringify(body),
       });
       if (!r.ok) throw new Error(await r.text());
       const data = await r.json();
@@ -226,6 +233,7 @@ export const useFlowStore = create((set, get) => ({
         explanation: data.explanation,
         highlightPath: data.path,
         queryId: data.query_id ?? null,
+        conversationId: data.conversation_id ?? null,
         queryNodes: data.subgraph?.nodes ?? [],
         executionSteps: data.execution_steps ?? [],
         graphNodesConsulted: data.graph_nodes_consulted ?? 0,

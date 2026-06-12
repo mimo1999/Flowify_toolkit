@@ -305,7 +305,12 @@ def build_execution_steps(
     return steps
 
 
-def explain(payload: GraphPayload, query: str, ordered_ids: List[str]) -> str:
+def explain(
+    payload: GraphPayload,
+    query: str,
+    ordered_ids: List[str],
+    prior_turns: Optional[List[dict]] = None,
+) -> str:
     by_id = {n.id: n for n in payload.function_nodes}
     summaries = []
     edge_info = []
@@ -333,4 +338,4 @@ def explain(payload: GraphPayload, query: str, ordered_ids: List[str]) -> str:
 
     if not summaries:
         return "No relevant functions found in the graph for that query."
-    return bob_client.explain_flow_with_graph(query, summaries, edge_info)
+    return bob_client.explain_flow_with_graph(query, summaries, edge_info, prior_turns)

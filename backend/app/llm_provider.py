@@ -411,16 +411,35 @@ class LLMProvider(ABC):
         query: str,
         summaries: List[str],
         edge_info: Optional[List[str]] = None,
+        prior_turns: Optional[List[dict]] = None,
     ) -> str:
-        """Graph-grounded explanation — explicitly cites graph edges and node roles."""
+        """Graph-grounded explanation — explicitly cites graph edges and node roles.
+
+        When *prior_turns* is provided (list of ``{"query": str, "summary": str}``),
+        the last two turns are prepended so the LLM can maintain follow-up context.
+        """
         joined = "\n".join(f"{i+1}. {s}" for i, s in enumerate(summaries))
         edge_block = ""
         if edge_info:
             edge_block = "\n\nGraph edges (call relationships):\n" + "\n".join(edge_info[:12])
+
+        conv_block = ""
+        if prior_turns:
+            conv_lines = []
+            for t in prior_turns[-2:]:
+                conv_lines.append(f"Q: {t['query']}")
+                conv_lines.append(f"A: {t['summary'][:200]}")
+            if conv_lines:
+                conv_block = (
+                    "\n\nPrior conversation context — use for follow-up continuity:\n"
+                    + "\n".join(conv_lines)
+                    + "\n"
+                )
+
         return self.ask(textwrap.dedent(f"""
             You are answering a developer question using a repository knowledge graph.
             The answer is grounded in the actual call graph and semantic metadata — not source file text.
-
+            {conv_block}
             Question: {query}
 
             Repository knowledge graph — relevant nodes (ordered by execution flow):
@@ -765,7 +784,13 @@ class HeuristicProvider(LLMProvider):
     def analyze_function_semantics(self, name, code, repo_context, neighbors=None) -> dict:
         return _heuristic_semantic_analysis(name, code, repo_context)
 
-    def explain_flow_with_graph(self, query: str, summaries: List[str], edge_info: Optional[List[str]] = None) -> str:
+    def explain_flow_with_graph(
+        self,
+        query: str,
+        summaries: List[str],
+        edge_info: Optional[List[str]] = None,
+        prior_turns: Optional[List[dict]] = None,
+    ) -> str:
         if not summaries:
             return "(stub) No relevant functions found in the graph."
         names = [s.split("(")[0].strip() for s in summaries[:5]]
@@ -1089,8 +1114,13 @@ def summarize_function(name: str, code: str, kind: str = "function") -> str:
 def summarize_module(name_hint: str, summaries: List[str]) -> dict:
     return _get().summarize_module(name_hint, summaries)
 
-def explain_flow_with_graph(query: str, summaries: List[str], edge_info: Optional[List[str]] = None) -> str:
-    return _get().explain_flow_with_graph(query, summaries, edge_info)
+def explain_flow_with_graph(
+    query: str,
+    summaries: List[str],
+    edge_info: Optional[List[str]] = None,
+    prior_turns: Optional[List[dict]] = None,
+) -> str:
+    return _get().explain_flow_with_graph(query, summaries, edge_info, prior_turns)
 
 def interpret_query(query: str, candidates: List[str], context: Optional[dict] = None) -> List[str]:
     return _get().interpret_query(query, candidates, context)

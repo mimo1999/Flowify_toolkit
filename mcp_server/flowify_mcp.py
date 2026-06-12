@@ -167,6 +167,14 @@ async def list_tools() -> list[Tool]:
                         "maximum": 5,
                         "default": 2,
                     },
+                    "conversation_id": {
+                        "type": "string",
+                        "description": (
+                            "Conversation thread ID for multi-turn context. "
+                            "Omit on the first question; on follow-up questions pass the "
+                            "conversation_id returned by the previous query_repo call."
+                        ),
+                    },
                 },
                 "required": ["graph_id", "query"],
             },
@@ -332,18 +340,23 @@ async def _handle_ingest_repo(args: dict) -> list[TextContent]:
 # ── query_repo ───────────────────────────────────────────────────────────────
 
 async def _handle_query_repo(args: dict) -> list[TextContent]:
-    graph_id = args.get("graph_id", "").strip()
-    query    = args.get("query", "").strip()
-    depth    = args.get("depth", 2)
+    graph_id        = args.get("graph_id", "").strip()
+    query           = args.get("query", "").strip()
+    depth           = args.get("depth", 2)
+    conversation_id = args.get("conversation_id", "").strip() or None
 
     if not graph_id or not query:
         return _error("graph_id and query are required")
 
     try:
+        body: dict = {"graph_id": graph_id, "query": query, "depth": depth}
+        if conversation_id:
+            body["conversation_id"] = conversation_id
+
         result = await _request(
             "post", "/mcp/query",
             timeout=LONG_TIMEOUT,
-            json={"graph_id": graph_id, "query": query, "depth": depth},
+            json=body,
         )
 
         if not result.get("success"):
@@ -372,8 +385,14 @@ async def _handle_query_repo(args: dict) -> list[TextContent]:
             lines.append("No relevant functions found.")
 
         qid = result.get("query_id")
+        cid = result.get("conversation_id")
         if qid:
             lines.append(f"\nQuery ID: {qid}  (use submit_feedback to rate this result)")
+        if cid:
+            lines.append(
+                f"Conversation ID: {cid}  "
+                "(pass as conversation_id in your next query_repo call for follow-up context)"
+            )
 
         return _text("\n".join(lines))
 
