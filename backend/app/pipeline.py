@@ -5,7 +5,7 @@ from typing import Dict
 
 import networkx as nx
 
-from . import llm_provider as bob_client, storage, graph_builder, module_abstractor, git_updater, llm_ingestion
+from . import llm_provider as bob_client, storage, graph_builder, module_abstractor, git_updater, llm_ingestion, learning
 from .models import GraphPayload, FunctionNode, RepositoryContext, SemanticMetadata, SemanticEdge
 
 
@@ -195,7 +195,13 @@ def ingest(repo_path: str) -> GraphPayload:
     _, head = git_updater.changed_files_since(repo_path, None)
     if head:
         storage.store_meta(graph_id, "git", {"head": head})
-    
+
+    # Fix 1: Pre-seed terminology map so the FIRST query benefits from it.
+    try:
+        learning.seed_terminology_from_graph(graph_id)
+    except Exception:
+        pass  # Non-critical — ingestion must not fail because of learning
+
     return payload
 
 

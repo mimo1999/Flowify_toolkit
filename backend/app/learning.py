@@ -238,7 +238,7 @@ def get_terminology_suggestions(graph_id: str, query: str) -> List[str]:
         if term in insights.terminology_map:
             term_map = insights.terminology_map[term]
             # Add functions with high confidence
-            if term_map.confidence > 0.3:
+            if term_map.confidence > 0.1:
                 suggestions.extend(term_map.mapped_functions)
     
     # Remove duplicates while preserving order
@@ -330,5 +330,58 @@ def update_node_importance(graph_id: str) -> None:
     
     # Save updated payload
     storage.save(payload)
+
+
+def seed_terminology_from_graph(graph_id: str) -> None:
+    """Pre-populate the terminology map from function names at ingest time.
+
+    Without seeding, the map starts empty and needs 1+ real queries before
+    the confidence threshold (0.1) is crossed.  This function pre-seeds every
+    discriminative term found in function names so the very first query already
+    benefits from the map.
+
+    Skipped when real query data already exists (avoids overwriting learned data
+    if the graph is re-ingested after use).
+    """
+    payload = storage.load_light(graph_id)
+    if not payload or not payload.function_nodes:
+        return
+
+    insights = load_learning_insights(graph_id)
+    if insights.total_queries > 0:
+        return  # Real data exists — don't overwrite
+
+    N = len(payload.function_nodes)
+    max_df = max(1, int(N * 0.20))   # filter terms appearing in >20% of functions
+
+    # Count how many functions each term appears in (document frequency)
+    from collections import defaultdict as _dd
+    term_df: dict = _dd(int)
+    for node in payload.function_nodes:
+        name_spaced = node.name.replace("_", " ").replace("-", " ")
+        for term in set(_extract_terms(name_spaced)):
+            term_df[term] += 1
+
+    # Seed discriminative terms → function mappings
+    for node in payload.function_nodes:
+        name_spaced = node.name.replace("_", " ").replace("-", " ")
+        for term in set(_extract_terms(name_spaced)):
+            if term_df[term] > max_df:
+                continue  # Too common to be useful (e.g., "get", "set", "init")
+
+            if term not in insights.terminology_map:
+                insights.terminology_map[term] = TerminologyMapping(term=term)
+
+            term_map = insights.terminology_map[term]
+            if node.name not in term_map.mapped_functions:
+                term_map.mapped_functions.append(node.name)
+
+            # frequency=4 → confidence=0.4 (above the 0.1 threshold after seeding)
+            term_map.frequency = max(term_map.frequency, 4)
+            term_map.confidence = min(1.0, term_map.frequency / 10.0)
+
+    insights.updated_at = datetime.utcnow().isoformat()
+    save_learning_insights(insights)
+
 
 # Made with Bob
