@@ -22,6 +22,7 @@ export const useFlowStore = create((set, get) => ({
   graphNodesConsulted: 0,
   loading: false,
   error: "",
+  exportStatus: null, // "copied" | "downloading" | null — transient feedback
 
   // Impact analysis panel
   impactData: null,
@@ -242,6 +243,42 @@ export const useFlowStore = create((set, get) => ({
       set({ error: String(e) });
     } finally {
       set({ loading: false });
+    }
+  },
+
+  exportGraph: async (format) => {
+    const { graphId } = get();
+    if (!graphId) return;
+    if (format === "mermaid") {
+      set({ exportStatus: "downloading" });
+      try {
+        const r = await fetch(`${API}/export/${graphId}?format=mermaid`);
+        if (!r.ok) throw new Error(await r.text());
+        const text = await r.text();
+        await navigator.clipboard.writeText(text);
+        set({ exportStatus: "copied" });
+        setTimeout(() => set({ exportStatus: null }), 2500);
+      } catch (e) {
+        set({ error: String(e), exportStatus: null });
+      }
+    } else if (format === "json") {
+      set({ exportStatus: "downloading" });
+      try {
+        const r = await fetch(`${API}/export/${graphId}?format=json`);
+        if (!r.ok) throw new Error(await r.text());
+        const blob = await r.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `graph-${graphId}.json`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        set({ exportStatus: null });
+      } catch (e) {
+        set({ error: String(e), exportStatus: null });
+      }
     }
   },
 

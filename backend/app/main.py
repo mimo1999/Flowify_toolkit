@@ -823,6 +823,117 @@ def delete_graph(graph_id: str):
 
 
 # ---------------------------------------------------------------------------
+# Graph export endpoint
+# ---------------------------------------------------------------------------
+
+@app.get("/export/{graph_id}")
+def export_graph(
+    graph_id: str,
+    format: str = "json",
+    max_nodes: int = 80,
+):
+    """Export the call graph as a downloadable Mermaid diagram or simplified JSON.
+
+    format:    "json"    — JSON download with nodes/edges and semantic metadata
+               "mermaid" — Mermaid flowchart TD text, suitable for pasting into
+                           mermaid.live or any Markdown renderer
+    max_nodes: cap how many nodes to include (default 80)
+    """
+    from datetime import datetime as _dt
+    from fastapi.responses import JSONResponse, PlainTextResponse
+
+    payload = storage.load_light(graph_id)
+    if payload is None:
+        raise HTTPException(404, "graph not found")
+
+    # Rank nodes by out-degree so the most-connected (important) ones come first
+    out_degree: dict[str, int] = {}
+    for e in payload.function_edges:
+        if e.relationship == "INVOKES" or e.type == "CALLS":
+            out_degree[e.source_id] = out_degree.get(e.source_id, 0) + 1
+
+    top_nodes = sorted(
+        payload.function_nodes,
+        key=lambda n: out_degree.get(n.id, 0),
+        reverse=True,
+    )[:max_nodes]
+    node_id_set = {n.id for n in top_nodes}
+
+    relevant_edges = [
+        e for e in payload.function_edges
+        if e.source_id in node_id_set
+        and e.target_id in node_id_set
+        and (e.relationship == "INVOKES" or e.type == "CALLS")
+    ]
+
+    if format == "json":
+        data = {
+            "graph_id": graph_id,
+            "repo_path": payload.repo_path,
+            "exported_at": _dt.utcnow().isoformat(),
+            "nodes": [
+                {
+                    "id": n.id,
+                    "name": n.name,
+                    "file_path": n.file_path,
+                    "type": n.type,
+                    "semantic_kind": n.adapter_metadata.get("semantic_kind", "CALLS"),
+                    "summary": n.summary or "",
+                    "intent": n.semantics.intent if n.semantics else None,
+                    "criticality": n.semantics.criticality if n.semantics else None,
+                }
+                for n in top_nodes
+            ],
+            "edges": [
+                {"source": e.source_id, "target": e.target_id, "type": e.type}
+                for e in relevant_edges[:500]
+            ],
+        }
+        return JSONResponse(
+            content=data,
+            headers={
+                "Content-Disposition": f'attachment; filename="graph-{graph_id}.json"',
+            },
+        )
+
+    elif format == "mermaid":
+        def _safe(nid: str) -> str:
+            return _re.sub(r"[^A-Za-z0-9_]", "_", nid)[:40]
+
+        lines = ["flowchart TD"]
+        for n in top_nodes:
+            nid = _safe(n.id)
+            label = n.name.replace('"', "'")
+            kind = n.adapter_metadata.get("semantic_kind", "CALLS")
+            if kind == "EXPOSES_API":
+                lines.append(f'    {nid}["{label}"]:::api')
+            elif kind == "USES_DB":
+                lines.append(f'    {nid}["{label}"]:::db')
+            elif kind in ("EMITS_EVENT", "CONSUMES_EVENT"):
+                lines.append(f'    {nid}["{label}"]:::event')
+            else:
+                lines.append(f'    {nid}["{label}"]')
+
+        for e in relevant_edges[:200]:
+            lines.append(f"    {_safe(e.source_id)} --> {_safe(e.target_id)}")
+
+        lines += [
+            "    classDef api fill:#10b981,color:#fff,stroke:#059669",
+            "    classDef db fill:#8b5cf6,color:#fff,stroke:#7c3aed",
+            "    classDef event fill:#f59e0b,color:#fff,stroke:#d97706",
+        ]
+
+        return PlainTextResponse(
+            content="\n".join(lines),
+            headers={
+                "Content-Disposition": f'attachment; filename="graph-{graph_id}.mmd"',
+            },
+        )
+
+    raise HTTPException(400, f"Unknown format '{format}'. Use 'json' or 'mermaid'.")
+
+
+# ---------------------------------------------------------------------------
 # MCP helper endpoints
 # ---------------------------------------------------------------------------
 
