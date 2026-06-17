@@ -490,6 +490,57 @@ class LLMProvider(ABC):
         # Strip any trailing " — description" the LLM might echo back
         return [re.sub(r"\s*[—–-].*$", "", l).strip() for l in raw.splitlines() if l.strip()][:10]
 
+    def summarize_repository_flow(self, evidence: dict) -> dict:
+        """Produce the prose sections of a repository flow summary.
+
+        *evidence* is the compact module-level pack assembled by the pipeline:
+        ``{purpose, project_type, domain, tech_stack, modules: [{module,
+        description, is_entry, key_functions: [{name, summary, intent}]}]}``.
+
+        Returns a dict with keys: ``what``, ``usecase``, ``techniques`` (list),
+        and ``module_flows`` (``{module_name: description}``).  The deterministic
+        sections (architecture diagram, tech stack) are added by the caller.
+        """
+        mod_lines = []
+        for m in evidence.get("modules", []):
+            tag = " [entry]" if m.get("is_entry") else ""
+            fns = ", ".join(
+                f"{f['name']}({f.get('intent') or '?'})" for f in m.get("key_functions", [])[:5]
+            )
+            mod_lines.append(f"- {m['module']}{tag}: {m.get('description','')}  | key fns: {fns}")
+        modules_block = "\n".join(mod_lines) if mod_lines else "(no modules detected)"
+
+        prompt = textwrap.dedent(f"""
+            You are documenting a codebase for an engineer who has never seen it.
+            Below is module-level evidence extracted from its call graph.
+
+            Purpose hint: {evidence.get('purpose','unknown')}
+            Project type: {evidence.get('project_type','unknown')}
+            Domain: {evidence.get('domain','general')}
+            Tech stack: {', '.join(evidence.get('tech_stack', [])) or 'unknown'}
+
+            Modules (in execution order, entry points first):
+            {modules_block}
+
+            Respond as JSON with EXACTLY these keys:
+            - "what": 2-3 sentences on what this code does.
+            - "usecase": 1-2 sentences on the problem it solves.
+            - "techniques": array of strings — model types, API styles (REST/RPC),
+              algorithms, notable design patterns. Empty array if none evident.
+            - "module_flows": object mapping each module name above to a one-line
+              description phrased as "<thing> is performed via A, B, C". Use the
+              module's key functions to ground each line.
+
+            Use ONLY the evidence above. Do not invent modules or technologies.
+        """).strip()
+
+        return self.ask_json(prompt, fallback={
+            "what": evidence.get("purpose", ""),
+            "usecase": "",
+            "techniques": [],
+            "module_flows": {},
+        })
+
     def analyze_repository(self, repo_path: str) -> dict:
         heuristic = _heuristic_repo_analysis(repo_path)
         root = Path(repo_path).resolve()
@@ -781,6 +832,24 @@ class HeuristicProvider(LLMProvider):
     def analyze_repository(self, repo_path: str) -> dict:
         return _heuristic_repo_analysis(repo_path)
 
+    def summarize_repository_flow(self, evidence: dict) -> dict:
+        """Degraded structured summary — no LLM, derived straight from evidence."""
+        modules = evidence.get("modules", [])
+        intents = {
+            f.get("intent")
+            for m in modules for f in m.get("key_functions", [])
+            if f.get("intent") and f.get("intent") != "unknown"
+        }
+        return {
+            "what": evidence.get("purpose")
+                    or f"A {evidence.get('project_type','software')} project"
+                       f" spanning {len(modules)} modules.",
+            "usecase": evidence.get("purpose", ""),
+            "techniques": sorted(intents),
+            # Reuse each module's existing description verbatim as its flow line
+            "module_flows": {m["module"]: m.get("description", "") for m in modules},
+        }
+
     def analyze_function_semantics(self, name, code, repo_context, neighbors=None) -> dict:
         return _heuristic_semantic_analysis(name, code, repo_context)
 
@@ -885,7 +954,10 @@ class OllamaProvider(LLMProvider):
                 "prompt": prompt,
                 "stream": False,
                 "options": {
-                    "num_predict": 512,   # max tokens
+                    # Ceiling, not a target — short answers still stop early at EOS.
+                    # Sized to fit multi-section structured JSON (e.g. flow summary)
+                    # without truncating mid-object, which would break JSON parsing.
+                    "num_predict": 2048,  # max tokens
                     "temperature": 0.2,   # low temp for deterministic code answers
                 },
             },
@@ -1124,6 +1196,9 @@ def explain_flow_with_graph(
 
 def interpret_query(query: str, candidates: List[str], context: Optional[dict] = None) -> List[str]:
     return _get().interpret_query(query, candidates, context)
+
+def summarize_repository_flow(evidence: dict) -> dict:
+    return _get().summarize_repository_flow(evidence)
 
 def analyze_repository(repo_path: str) -> dict:
     return _get().analyze_repository(repo_path)

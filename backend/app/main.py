@@ -934,6 +934,49 @@ def export_graph(
 
 
 # ---------------------------------------------------------------------------
+# Flow summary endpoints
+# ---------------------------------------------------------------------------
+
+@app.get("/flow_summary/{graph_id}")
+def get_flow_summary(graph_id: str):
+    """Return the repository flow summary generated at ingest time.
+
+    404 if the graph doesn't exist, or if it was ingested before the flow
+    summary feature existed (use POST to generate one on demand).
+    """
+    data = storage.load_meta(graph_id, "flow_summary")
+    if data is None:
+        if storage.load_light(graph_id) is None:
+            raise HTTPException(404, "graph not found")
+        raise HTTPException(404, "flow summary not available — POST to generate one")
+    return data
+
+
+@app.post("/flow_summary/{graph_id}")
+def generate_flow_summary(graph_id: str):
+    """(Re)generate the flow summary for an existing graph.
+
+    Useful for graphs ingested before the feature shipped, or to refresh after
+    switching to a better LLM provider.
+    """
+    from .models import RepositoryContext
+
+    payload = storage.load_light(graph_id)
+    if payload is None:
+        raise HTTPException(404, "graph not found")
+
+    ctx_dict = storage.load_meta(graph_id, "repo_context") or {}
+    try:
+        repo_context = RepositoryContext(**ctx_dict)
+    except Exception:
+        repo_context = RepositoryContext(fallback_used=True)
+
+    summary = pipeline._build_flow_summary(graph_id, payload.repo_path, payload, repo_context)
+    storage.store_meta(graph_id, "flow_summary", summary.model_dump())
+    return summary.model_dump()
+
+
+# ---------------------------------------------------------------------------
 # MCP helper endpoints
 # ---------------------------------------------------------------------------
 

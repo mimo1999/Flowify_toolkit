@@ -382,6 +382,44 @@ class ImpactAnalysis(BaseModel):
     semantic_kind: str = "CALLS"
 
 
+class FlowStep(BaseModel):
+    """One module in the ordered narrative of how data flows through the repo."""
+    step: int
+    module: str
+    description: str = Field(
+        default="",
+        description="What this module does, phrased as 'X is performed via A, B, C'"
+    )
+    key_functions: List[str] = Field(default_factory=list)
+
+
+class FlowSummary(BaseModel):
+    """LLM-generated repository overview produced once at ingest time.
+
+    Architecture diagram and tech stack are generated deterministically from the
+    module graph / repo context; the prose sections come from the LLM.
+    """
+    graph_id: str
+    repo_path: str = ""
+    what: str = Field(default="", description="What the code does")
+    usecase: str = Field(default="", description="What problem the codebase solves")
+    flows: List[FlowStep] = Field(default_factory=list)
+    architecture_mermaid: str = Field(
+        default="",
+        description="High-level module-level Mermaid flowchart (deterministic)"
+    )
+    tech_stack: List[str] = Field(default_factory=list)
+    techniques: List[str] = Field(
+        default_factory=list,
+        description="Model types, API styles, algorithms, and patterns in use"
+    )
+    fallback_used: bool = Field(
+        default=False,
+        description="True if produced without a real LLM (heuristic degraded mode)"
+    )
+    generated_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+
+
 class QueryResponse(BaseModel):
     explanation: str
     subgraph: Dict[str, Any]

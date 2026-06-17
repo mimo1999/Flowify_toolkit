@@ -1,12 +1,19 @@
 """End-to-end ingestion pipeline (called from API endpoints)."""
 from __future__ import annotations
+import re
 from pathlib import Path
-from typing import Dict
+from typing import Dict, List
 
 import networkx as nx
 
 from . import llm_provider as bob_client, storage, graph_builder, module_abstractor, git_updater, llm_ingestion, learning
-from .models import GraphPayload, FunctionNode, RepositoryContext, SemanticMetadata, SemanticEdge
+from .models import (
+    GraphPayload, FunctionNode, RepositoryContext, SemanticMetadata, SemanticEdge,
+    FlowSummary, FlowStep, ModuleNode, ModuleEdge,
+)
+
+
+_CRITICALITY_RANK = {"critical": 3, "high": 2, "medium": 1, "low": 0}
 
 
 def _is_callable(node: FunctionNode) -> bool:
@@ -121,6 +128,241 @@ def _analyze_semantics(
     return semantic_edges
 
 
+# A flow summary is meant to be skimmable — cap how many modules appear in both
+# the narrative and the diagram so neither becomes an unreadable wall.
+_MAX_FLOW_MODULES = 18
+
+_TEST_PATH_RE = re.compile(r"(^|/)(tests?|__tests__|spec)(/|$)|(^|/)test_|_test\.")
+
+
+def _is_test_module(m: ModuleNode, func_by_id: Dict[str, FunctionNode]) -> bool:
+    """True if a majority of a module's functions live in test files.
+
+    Test code isn't part of the runtime data flow, so it shouldn't crowd out
+    real modules in a high-level architecture view.
+    """
+    paths = [
+        func_by_id[i].file_path
+        for i in m.linked_function_ids
+        if i in func_by_id and func_by_id[i].file_path
+    ]
+    if not paths:
+        return False
+    test_paths = sum(1 for p in paths if _TEST_PATH_RE.search(p))
+    return test_paths > len(paths) / 2
+
+
+def _select_significant_modules(
+    module_nodes: List[ModuleNode],
+    module_edges: List[ModuleEdge],
+    func_by_id: Dict[str, FunctionNode],
+    limit: int = _MAX_FLOW_MODULES,
+) -> List[ModuleNode]:
+    """Return the most significant runtime modules, BFS-ordered from entry points.
+
+    Significance = entry points first, then by number of linked functions.  We
+    seed the BFS frontier in significance order so the most important reachable
+    modules survive the *limit* cap, then append the biggest leftovers.  Test
+    modules are excluded unless there aren't enough runtime modules to fill the
+    cap (they're appended last so the diagram stays focused on real flow).
+    """
+    by_id = {m.id: m for m in module_nodes}
+    adjacency: Dict[str, List[str]] = {}
+    for e in module_edges:
+        adjacency.setdefault(e.source_module_id, []).append(e.target_module_id)
+
+    def size(m: ModuleNode) -> int:
+        return len(m.linked_function_ids)
+
+    runtime = [m for m in module_nodes if not _is_test_module(m, func_by_id)]
+    pool = runtime or module_nodes  # fall back if everything looks like tests
+
+    entries = [m.id for m in sorted(pool, key=size, reverse=True) if m.is_entry_point]
+    if not entries:
+        entries = [m.id for m in sorted(pool, key=size, reverse=True)[:1]]
+    pool_ids = {m.id for m in pool}
+
+    ordered: List[ModuleNode] = []
+    seen: set = set()
+    frontier = list(entries)
+    while frontier and len(ordered) < limit:
+        mid = frontier.pop(0)
+        if mid in seen or mid not in by_id or mid not in pool_ids:
+            continue
+        seen.add(mid)
+        ordered.append(by_id[mid])
+        # Visit larger neighbours first (runtime modules only)
+        nbrs = sorted(
+            (i for i in adjacency.get(mid, []) if i in pool_ids),
+            key=lambda i: size(by_id[i]) if i in by_id else 0,
+            reverse=True,
+        )
+        frontier.extend(nbrs)
+
+    # Fill remaining slots with the biggest runtime modules not yet reached
+    if len(ordered) < limit:
+        for m in sorted(pool, key=size, reverse=True):
+            if len(ordered) >= limit:
+                break
+            if m.id not in seen:
+                seen.add(m.id)
+                ordered.append(m)
+    return ordered
+
+
+def _representative_fn(m: ModuleNode, func_by_id: Dict[str, FunctionNode]) -> str:
+    """Return the highest-criticality function name in a module, or ''."""
+    fns = sorted(
+        (func_by_id[i] for i in m.linked_function_ids if i in func_by_id),
+        key=lambda n: _CRITICALITY_RANK.get(n.semantics.criticality if n.semantics else "low", 0),
+        reverse=True,
+    )
+    return fns[0].name if fns else ""
+
+
+def _disambiguate_labels(
+    selected: List[ModuleNode],
+    func_by_id: Dict[str, FunctionNode],
+) -> Dict[str, str]:
+    """Build unique, human-readable labels for modules whose names collide.
+
+    Module names are directory-derived and often repeat (e.g. many "backend/app").
+    A bare diagram of nine identical labels is useless, so duplicated names are
+    enriched with the module's most critical function ("backend/app · ingest");
+    any residual collisions get a short id suffix.
+    """
+    from collections import Counter
+    counts = Counter(m.name for m in selected)
+    labels: Dict[str, str] = {}
+    used: set = set()
+    for m in selected:
+        label = m.name
+        if counts[m.name] > 1:
+            rep = _representative_fn(m, func_by_id)
+            if rep:
+                label = f"{m.name} · {rep}"
+        final, n = label, 2
+        while final in used:
+            final = f"{label} ({m.id[-4:]})" if n == 2 else f"{label} #{n}"
+            n += 1
+        used.add(final)
+        labels[m.id] = final
+    return labels
+
+
+def _module_mermaid(
+    selected: List[ModuleNode],
+    module_edges: List[ModuleEdge],
+    labels: Dict[str, str],
+) -> str:
+    """Render a high-level, deterministic Mermaid flowchart for *selected* modules.
+
+    Built purely from the module graph so it can never show a dependency that
+    doesn't exist in module_edges.  Only edges between selected modules are drawn,
+    keeping the diagram high-level.  Entry-point modules get a distinct class.
+    """
+    def sid(mid: str) -> str:
+        return re.sub(r"[^A-Za-z0-9_]", "_", mid)[:40]
+
+    selected_ids = {m.id for m in selected}
+    lines = ["flowchart TD"]
+    for m in selected:
+        label = labels.get(m.id, m.name).replace('"', "'")
+        cls = ":::entry" if m.is_entry_point else ""
+        lines.append(f'    {sid(m.id)}["{label}"]{cls}')
+    for e in module_edges:
+        if e.source_module_id in selected_ids and e.target_module_id in selected_ids:
+            lines.append(f"    {sid(e.source_module_id)} --> {sid(e.target_module_id)}")
+    lines.append("    classDef entry fill:#10b981,color:#fff,stroke:#059669")
+    return "\n".join(lines)
+
+
+def _flow_evidence(
+    payload: GraphPayload,
+    repo_context: RepositoryContext,
+    selected: List[ModuleNode],
+    labels: Dict[str, str],
+) -> dict:
+    """Assemble the compact, module-level evidence pack for the LLM.
+
+    Keeps token cost bounded by working over the *selected* modules only and
+    attaching just each module's top-5 functions by criticality.  Modules are
+    keyed by their disambiguated *label* so same-named modules stay distinct.
+    """
+    func_by_id = {n.id: n for n in payload.function_nodes}
+
+    modules = []
+    for m in selected:
+        fns = sorted(
+            (func_by_id[i] for i in m.linked_function_ids if i in func_by_id),
+            key=lambda n: _CRITICALITY_RANK.get(
+                n.semantics.criticality if n.semantics else "low", 0
+            ),
+            reverse=True,
+        )[:5]
+        modules.append({
+            "module": labels.get(m.id, m.name),
+            "description": m.description,
+            "is_entry": m.is_entry_point,
+            "key_functions": [
+                {
+                    "name": f.name,
+                    "summary": f.summary or "",
+                    "intent": f.semantics.intent if f.semantics else None,
+                }
+                for f in fns
+            ],
+        })
+
+    return {
+        "purpose": repo_context.purpose,
+        "project_type": repo_context.project_type,
+        "domain": repo_context.domain,
+        "tech_stack": repo_context.tech_stack,
+        "modules": modules,
+    }
+
+
+def _build_flow_summary(
+    graph_id: str,
+    repo_path: str,
+    payload: GraphPayload,
+    repo_context: RepositoryContext,
+) -> FlowSummary:
+    """Produce and return the FlowSummary (prose via LLM, diagram deterministic)."""
+    func_by_id = {n.id: n for n in payload.function_nodes}
+    selected = _select_significant_modules(payload.module_nodes, payload.module_edges, func_by_id)
+    labels = _disambiguate_labels(selected, func_by_id)
+    evidence = _flow_evidence(payload, repo_context, selected, labels)
+    provider = bob_client.get_provider()
+    fallback_used = getattr(provider, "_is_heuristic", False)
+
+    llm = bob_client.summarize_repository_flow(evidence)
+    module_flows = llm.get("module_flows", {}) or {}
+
+    flows = [
+        FlowStep(
+            step=i + 1,
+            module=m["module"],
+            description=module_flows.get(m["module"]) or m.get("description", ""),
+            key_functions=[f["name"] for f in m["key_functions"]],
+        )
+        for i, m in enumerate(evidence["modules"])
+    ]
+
+    return FlowSummary(
+        graph_id=graph_id,
+        repo_path=repo_path,
+        what=llm.get("what") or repo_context.purpose,
+        usecase=llm.get("usecase", ""),
+        flows=flows,
+        architecture_mermaid=_module_mermaid(selected, payload.module_edges, labels),
+        tech_stack=repo_context.tech_stack,
+        techniques=llm.get("techniques", []) or [],
+        fallback_used=fallback_used,
+    )
+
+
 def ingest(repo_path: str) -> GraphPayload:
     # Phase 1: Analyze repository context before ingestion
     print(f"[Phase 1] Analyzing repository: {repo_path}")
@@ -201,6 +443,13 @@ def ingest(repo_path: str) -> GraphPayload:
         learning.seed_terminology_from_graph(graph_id)
     except Exception:
         pass  # Non-critical — ingestion must not fail because of learning
+
+    # Generate the repository flow summary (prose via LLM, diagram deterministic).
+    try:
+        flow_summary = _build_flow_summary(graph_id, repo_path, payload, repo_context)
+        storage.store_meta(graph_id, "flow_summary", flow_summary.model_dump())
+    except Exception as e:
+        print(f"  - flow summary generation failed ({e}); skipping")
 
     return payload
 

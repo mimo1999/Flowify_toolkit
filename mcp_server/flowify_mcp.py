@@ -8,6 +8,7 @@ query_repo          Natural-language query against an ingested graph.
 list_graphs         List all ingested repositories with metadata.
 get_repo_overview   Full repo context: purpose, architecture, entry points.
 impact_analysis     Change-impact analysis by function name.
+get_flow_summary    Narrative flow summary: what/usecase/flows/architecture/techniques.
 delete_graph        Delete a stored graph and free its storage.
 
 Resilience features
@@ -240,6 +241,36 @@ async def list_tools() -> list[Tool]:
             },
         ),
         Tool(
+            name="get_flow_summary",
+            description=(
+                "Get a narrative flow summary of an ingested repository: what the code "
+                "does, the problem it solves, an ordered walkthrough of the modules data "
+                "flows through, a high-level Mermaid architecture diagram, the tech stack, "
+                "and techniques used (model types, API styles, algorithms). "
+                "This is the best single call to understand an unfamiliar codebase end-to-end. "
+                "Generated at ingest time; pass regenerate=true to rebuild it."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "graph_id": {
+                        "type": "string",
+                        "description": "Graph ID from ingest_repo or list_graphs.",
+                    },
+                    "regenerate": {
+                        "type": "boolean",
+                        "description": (
+                            "Rebuild the summary instead of returning the cached one. "
+                            "Use for graphs ingested before the feature existed, or to "
+                            "refresh after switching to a better LLM. Default false."
+                        ),
+                        "default": False,
+                    },
+                },
+                "required": ["graph_id"],
+            },
+        ),
+        Tool(
             name="delete_graph",
             description=(
                 "Permanently delete a stored call graph and all its associated data "
@@ -271,6 +302,7 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
         "list_graphs":      _handle_list_graphs,
         "get_repo_overview": _handle_get_repo_overview,
         "impact_analysis":  _handle_impact_analysis,
+        "get_flow_summary": _handle_get_flow_summary,
         "delete_graph":     _handle_delete_graph,
     }
     handler = dispatch.get(name)
@@ -567,6 +599,62 @@ async def _handle_impact_analysis(args: dict) -> list[TextContent]:
         return _error(f"HTTP {exc.response.status_code}: {exc.response.text[:200]}")
     except Exception as exc:
         logger.exception("impact_analysis failed")
+        return _error(str(exc))
+
+
+# ── get_flow_summary ──────────────────────────────────────────────────────────
+
+async def _handle_get_flow_summary(args: dict) -> list[TextContent]:
+    graph_id   = args.get("graph_id", "").strip()
+    regenerate = bool(args.get("regenerate", False))
+    if not graph_id:
+        return _error("graph_id is required")
+
+    try:
+        if regenerate:
+            # POST regenerates (LLM-backed → may be slow), GET reads the cached one
+            data = await _request("post", f"/flow_summary/{graph_id}", timeout=LONG_TIMEOUT)
+        else:
+            data = await _request("get", f"/flow_summary/{graph_id}", timeout=SHORT_TIMEOUT)
+
+        lines = [f"Flow summary — {graph_id}"]
+        if data.get("what"):
+            lines.append(f"\nWHAT\n{data['what']}")
+        if data.get("usecase"):
+            lines.append(f"\nUSE CASE\n{data['usecase']}")
+
+        flows = data.get("flows", [])
+        if flows:
+            lines.append("\nFLOWS")
+            for f in flows:
+                lines.append(f"  {f['step']}. {f['module']}")
+                if f.get("description"):
+                    lines.append(f"     {f['description']}")
+
+        if data.get("tech_stack"):
+            lines.append(f"\nTECH STACK\n  {', '.join(data['tech_stack'])}")
+        if data.get("techniques"):
+            lines.append(f"\nTECHNIQUES\n  {', '.join(data['techniques'])}")
+
+        if data.get("architecture_mermaid"):
+            lines.append("\nHIGH-LEVEL ARCHITECTURE (Mermaid)\n```mermaid")
+            lines.append(data["architecture_mermaid"])
+            lines.append("```")
+
+        if data.get("fallback_used"):
+            lines.append("\n[note: generated without a real LLM — prose is degraded]")
+
+        return _text("\n".join(lines))
+
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 404:
+            return _error(
+                f"No flow summary for graph '{graph_id}'. "
+                "It may predate the feature — call again with regenerate=true."
+            )
+        return _error(f"HTTP {exc.response.status_code}: {exc.response.text[:200]}")
+    except Exception as exc:
+        logger.exception("get_flow_summary failed")
         return _error(str(exc))
 
 
