@@ -28,6 +28,7 @@ Resilience features
 import asyncio
 import json
 import logging
+import os
 from typing import Any
 
 import httpx
@@ -48,7 +49,13 @@ logging.basicConfig(
 logger = logging.getLogger("flowify-mcp")
 
 # ── Config ──────────────────────────────────────────────────────────────────
-FASTAPI_BASE_URL = "http://localhost:8000"
+# Both mcp_server/config.json and mcp_server/README.md have long documented
+# FASTAPI_BASE_URL as an environment variable — this used to ignore it
+# entirely and hardcode localhost, so pointing the MCP server at a deployed
+# backend required editing this file. Root paths (e.g. "/mcp/ingest") work
+# unprefixed against any Flowify backend — see the router-mounting comment
+# at the top of backend/app/main.py.
+FASTAPI_BASE_URL = os.environ.get("FASTAPI_BASE_URL", "http://localhost:8000").rstrip("/")
 # LLM-backed operations can take several minutes (Ollama cold start)
 LONG_TIMEOUT  = 420.0   # ingest / query
 SHORT_TIMEOUT =  15.0   # list / overview / delete

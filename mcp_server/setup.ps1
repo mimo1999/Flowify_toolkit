@@ -71,7 +71,7 @@ Write-Host "Next steps:" -ForegroundColor Yellow
 Write-Host "1. Ensure FastAPI backend is running: cd ..\backend && uvicorn app.main:app --port 8000" -ForegroundColor White
 Write-Host "2. Restart VS Code to load the MCP server" -ForegroundColor White
 Write-Host "3. Ask Bob: 'What tools do you have available?'" -ForegroundColor White
-Write-Host "4. Test with: 'Ingest the repository at D:/Projects/ibm_hackathon/Flowify'" -ForegroundColor White
+Write-Host "4. Test with: 'Ingest the repository at D:/Projects/hackathon/Flowify'" -ForegroundColor White
 Write-Host ""
 Write-Host "Documentation:" -ForegroundColor Yellow
 Write-Host "- Quick Start: .\README.md" -ForegroundColor White
