@@ -1,5 +1,5 @@
 from typing import List, Optional, Literal, Dict, Any, Union
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from datetime import datetime
 import uuid
 
@@ -392,11 +392,27 @@ class LLMIngestionResult(BaseModel):
 
 
 class IngestRequest(BaseModel):
-    repo_path: str
+    repo_path: Optional[str] = Field(
+        None,
+        description="Absolute filesystem path to an already-local repository. "
+                    "In server mode this must resolve under FLOWIFY_ALLOWED_ROOTS."
+    )
+    repo_url: Optional[str] = Field(
+        None,
+        description="https:// git URL (github.com/gitlab.com/bitbucket.org/codeberg.org) "
+                    "to clone and ingest. Preferred on hosted deployments — see "
+                    "backend/app/cloner.py for the allowed-host and safety checks."
+    )
     repo_id: Optional[str] = Field(
         None,
         description="Optional stable identifier for the repository. If not provided, generated from repo_path hash."
     )
+
+    @model_validator(mode="after")
+    def _require_one_source(self) -> "IngestRequest":
+        if not self.repo_path and not self.repo_url:
+            raise ValueError("either repo_path or repo_url is required")
+        return self
 
 
 class BobGraphRequest(BaseModel):
