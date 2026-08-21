@@ -275,6 +275,92 @@ class GraphPayload(BaseModel):
     )
 
 
+# Heterogeneous knowledge graph (documents + rationale + provenance)
+
+ProvenanceSource = Literal["ast", "static_analysis", "regex", "llm", "heuristic", "user"]
+
+
+class Provenance(BaseModel):
+    """Where a relationship came from and how much to trust it.
+
+    Every knowledge edge carries one so the UI can show
+    "CALLS — 100% — AST" vs "USES_DB — 63% — LLM".
+    """
+
+    source: ProvenanceSource = "regex"
+    confidence: float = Field(default=1.0, ge=0.0, le=1.0)
+    evidence: Optional[str] = Field(
+        None, description="Short excerpt (e.g. the matching line) supporting the edge"
+    )
+    reasoning: Optional[str] = Field(
+        None, description="One-line explanation of how the edge was derived"
+    )
+
+
+DocumentType = Literal["readme", "adr", "rfc", "changelog", "contributing", "guide", "wiki", "doc"]
+
+
+class DocumentSection(BaseModel):
+    """A heading-delimited section inside a document."""
+
+    heading: str
+    level: int = 1
+    line: int = 1
+
+
+class DocumentNode(BaseModel):
+    """A documentation artifact promoted to a first-class graph node."""
+
+    id: str                      # "doc::<relative path>"
+    title: str
+    file_path: str
+    doc_type: DocumentType = "doc"
+    sections: List[DocumentSection] = Field(default_factory=list)
+    summary: str = ""
+    word_count: int = 0
+
+
+KnowledgeEdgeType = Literal["REFERENCES", "LINKS_TO", "EXPLAINS", "MENTIONS_FILE"]
+
+
+class KnowledgeEdge(BaseModel):
+    """Edge connecting documents to code nodes (or to other documents)."""
+
+    type: KnowledgeEdgeType = "REFERENCES"
+    source_id: str               # doc:: id
+    target_id: str               # code node id, file path, or doc:: id
+    section: Optional[str] = None
+    line: Optional[int] = None
+    provenance: Provenance = Field(default_factory=Provenance)
+
+
+RationaleMarker = Literal["TODO", "FIXME", "HACK", "NOTE", "WHY", "XXX", "BUG", "WARNING", "OPTIMIZE"]
+
+
+class RationaleNote(BaseModel):
+    """Developer intent extracted from a source comment (WHY/HACK/TODO/...)."""
+
+    id: str
+    marker: RationaleMarker
+    text: str
+    file_path: str
+    line: int
+    attached_node_id: Optional[str] = Field(
+        None, description="Function/class node whose span contains this comment"
+    )
+    attached_node_name: Optional[str] = None
+
+
+class KnowledgeIndex(BaseModel):
+    """The document + rationale layer, stored as graph metadata."""
+
+    graph_id: str = ""
+    documents: List[DocumentNode] = Field(default_factory=list)
+    doc_edges: List[KnowledgeEdge] = Field(default_factory=list)
+    rationale_notes: List[RationaleNote] = Field(default_factory=list)
+    generated_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+
+
 class LLMIngestionNode(BaseModel):
     """LLM-normalized node-level interpretation of AST ingestion results."""
 
