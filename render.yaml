@@ -1,0 +1,30 @@
+# Render Blueprint — https://render.com/docs/blueprint-spec
+#
+# One-click free deploy: in the Render dashboard, "New +" → "Blueprint",
+# point it at this repo, and Render builds Dockerfile as a free web service.
+# No credit card required for this plan tier (unlike Hugging Face Spaces'
+# Docker SDK, which now requires PRO — see README's Deployment section).
+#
+# Render's free web services have an ephemeral filesystem (no persistent
+# disk without a paid add-on) and sleep after 15 minutes idle, waking on
+# the next request in ~30-60s. Both are already accounted for in the app:
+# FLOWIFY_MODE=server assumes ephemeral storage and runs a TTL janitor
+# (FLOWIFY_GRAPH_TTL_H) rather than relying on graphs surviving a restart.
+
+services:
+  - type: web
+    name: flowify
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /api/status
+    envVars:
+      - key: FLOWIFY_MODE
+        value: server
+      - key: LLM_PROVIDER
+        value: heuristic
+      - key: FLOWIFY_GRAPH_TTL_H
+        value: "24"
+      - key: FLOWIFY_CORS_ORIGINS
+        value: "*"

@@ -1,0 +1,25 @@
+# Keep the Docker build context small and avoid baking local state into the
+# image — mirrors .gitignore plus a couple of Docker-specific exclusions.
+.git
+.github
+.claude
+CLAUDE.md
+*.claude
+
+backend/.venv
+backend/venv
+venv
+frontend/node_modules
+frontend/dist
+mcp_server/__pycache__
+
+_store
+bob_sessions
+.run-logs
+*.pyc
+__pycache__
+
+*.md
+!README.md
+docs
+tests

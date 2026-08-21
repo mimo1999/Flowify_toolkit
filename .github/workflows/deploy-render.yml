@@ -1,0 +1,32 @@
+name: Deploy to Render
+
+# Render's normal flow needs no GitHub Action at all: connect this repo in
+# the Render dashboard ("New +" → "Blueprint", pointing at render.yaml) and
+# it auto-deploys on every push to main, using Render's own GitHub App.
+#
+# This workflow is only useful if you've turned Render's auto-deploy OFF
+# (e.g. to gate deploys on CI passing first) and want an explicit trigger
+# instead. It calls a Deploy Hook URL — copy it from the Render dashboard
+# under your service's Settings → Deploy Hook — stored as the repo secret
+# RENDER_DEPLOY_HOOK_URL. Unset by default, so this is a no-op until
+# someone configures it.
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch: {}
+
+jobs:
+  deploy:
+    if: github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Render deploy hook
+        run: |
+          if [ -z "${{ secrets.RENDER_DEPLOY_HOOK_URL }}" ]; then
+            echo "::notice::RENDER_DEPLOY_HOOK_URL not set — skipping. Render's GitHub-integrated auto-deploy (the default) doesn't need this workflow at all."
+            exit 0
+          fi
+          curl -fsS -X POST "${{ secrets.RENDER_DEPLOY_HOOK_URL }}"

@@ -1,0 +1,72 @@
+name: Deploy to Hugging Face Space (requires HF PRO)
+
+# NOTE: as of July 2026, Hugging Face requires a PRO ($9/mo), Team, or
+# Enterprise plan to create a Docker (or CPU-Basic Gradio) Space — the free
+# tier is limited to 2 ZeroGPU Spaces, which don't fit an always-on FastAPI
+# backend. This workflow is kept for anyone who does have PRO; for a
+# genuinely free host, deploy via render.yaml instead (see
+# .github/workflows/deploy-render.yml and README's Deployment section).
+#
+# Pushes this repo's main branch to a Hugging Face Space, which then builds
+# the Dockerfile itself (Spaces are a git remote, not a container registry —
+# see huggingface.co/docs/hub/spaces-sdks-docker). Requires two repo secrets:
+#   HF_TOKEN      a Hugging Face access token with write access to the Space
+#   HF_SPACE_REPO the Space's git URL, e.g.
+#                 https://huggingface.co/spaces/<user>/flowify
+# Both are unset by default, so this workflow is a no-op (skipped, not
+# failing) until someone who owns a Space configures them.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check secrets are configured
+        id: check
+        run: |
+          if [ -n "${{ secrets.HF_TOKEN }}" ] && [ -n "${{ secrets.HF_SPACE_REPO }}" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::HF_TOKEN / HF_SPACE_REPO not set — skipping Space deploy. See this workflow's comments to configure it."
+          fi
+
+      - name: Assemble the Space's deploy tree
+        if: steps.check.outputs.configured == 'true'
+        # Hugging Face Spaces read their README.md's YAML front matter (sdk,
+        # app_port, title, ...) to know how to build the app — see
+        # https://huggingface.co/docs/hub/spaces-config-reference. That
+        # front matter belongs in deploy/space_readme.md, not this project's
+        # own GitHub README (which GitHub would render as literal text, not
+        # parse as config). So this pushes a copy of the repo with that one
+        # file swapped in, rather than `git push`ing this branch as-is.
+        run: |
+          rm -rf /tmp/space-deploy
+          mkdir -p /tmp/space-deploy
+          git archive HEAD | tar -x -C /tmp/space-deploy
+          cp deploy/space_readme.md /tmp/space-deploy/README.md
+
+      - name: Push to Hugging Face Space
+        if: steps.check.outputs.configured == 'true'
+        working-directory: /tmp/space-deploy
+        run: |
+          # HF_SPACE_REPO may be given with or without a scheme
+          # (huggingface.co/spaces/you/flowify or https://huggingface.co/...);
+          # normalize before embedding the token as basic-auth credentials.
+          host="${SPACE_REPO#https://}"
+          host="${host#http://}"
+          git init -q
+          git add -A
+          git -c user.name=github-actions -c user.email=github-actions@github.com \
+            commit -q -m "Deploy ${{ github.sha }}"
+          git push --force "https://user:${{ secrets.HF_TOKEN }}@${host}" HEAD:main
+        env:
+          SPACE_REPO: ${{ secrets.HF_SPACE_REPO }}
