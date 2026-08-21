@@ -3,13 +3,20 @@ Flowify MCP Server — exposes the full Flowify toolkit to AI coding assistants.
 
 Tools
 -----
-ingest_repo         Ingest a repository and build its call graph.
-query_repo          Natural-language query against an ingested graph.
-list_graphs         List all ingested repositories with metadata.
-get_repo_overview   Full repo context: purpose, architecture, entry points.
-impact_analysis     Change-impact analysis by function name.
-get_flow_summary    Narrative flow summary: what/usecase/flows/architecture/techniques.
-delete_graph        Delete a stored graph and free its storage.
+ingest_repo           Ingest a repository and build its call graph.
+query_repo            Natural-language query against an ingested graph.
+list_graphs           List all ingested repositories with metadata.
+get_repo_overview     Full repo context: purpose, architecture, entry points.
+impact_analysis       Change-impact analysis by function name.
+get_flow_summary      Narrative flow summary: what/usecase/flows/architecture/techniques.
+delete_graph          Delete a stored graph and free its storage.
+find_node             Locate code nodes by (partial) name.
+shortest_path         Shortest call path between two functions.
+graph_hotspots        God nodes, critical bridges, high-risk components.
+find_cycles           Circular dependencies + surprising cross-module couplings.
+find_dead_code        Functions never invoked anywhere.
+search_rationale      Search TODO/FIXME/HACK/WHY developer intent notes.
+architecture_report   Full Markdown architecture report for a repository.
 
 Resilience features
 -------------------
@@ -271,6 +278,121 @@ async def list_tools() -> list[Tool]:
             },
         ),
         Tool(
+            name="find_node",
+            description=(
+                "Locate functions, classes, or methods by exact or partial name. "
+                "Returns matching nodes with file paths, summaries, and line numbers. "
+                "Use this to resolve a name before impact_analysis or shortest_path."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "graph_id": {"type": "string", "description": "Graph ID from ingest_repo or list_graphs."},
+                    "name": {"type": "string", "description": "Full or partial symbol name to find."},
+                    "limit": {"type": "integer", "description": "Max matches (default 10).", "default": 10},
+                },
+                "required": ["graph_id", "name"],
+            },
+        ),
+        Tool(
+            name="shortest_path",
+            description=(
+                "Find the shortest call path between two functions, addressed by name. "
+                "Answers questions like 'how does the API layer reach the database?' — "
+                "returns the ordered chain of functions connecting source to target."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "graph_id": {"type": "string", "description": "Graph ID from ingest_repo or list_graphs."},
+                    "source": {"type": "string", "description": "Name of the starting function."},
+                    "target": {"type": "string", "description": "Name of the target function."},
+                },
+                "required": ["graph_id", "source", "target"],
+            },
+        ),
+        Tool(
+            name="graph_hotspots",
+            description=(
+                "Structural hotspot analysis: the most influential 'god' functions "
+                "(PageRank + degree + betweenness centrality), critical bridges whose "
+                "removal disconnects the graph, and high-risk components (large fan-out, "
+                "many callers, high complexity). Ideal for onboarding and refactor planning."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "graph_id": {"type": "string", "description": "Graph ID from ingest_repo or list_graphs."},
+                },
+                "required": ["graph_id"],
+            },
+        ),
+        Tool(
+            name="find_cycles",
+            description=(
+                "Detect circular dependencies in the call graph, plus surprising "
+                "cross-module couplings (thin threads between otherwise-unrelated "
+                "subsystems). Both often reveal architectural problems."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "graph_id": {"type": "string", "description": "Graph ID from ingest_repo or list_graphs."},
+                },
+                "required": ["graph_id"],
+            },
+        ),
+        Tool(
+            name="find_dead_code",
+            description=(
+                "List functions that are never invoked anywhere in the graph. "
+                "These are dead-code CANDIDATES — dynamic dispatch, reflection, and "
+                "framework hooks can produce false positives, so verify before deleting."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "graph_id": {"type": "string", "description": "Graph ID from ingest_repo or list_graphs."},
+                },
+                "required": ["graph_id"],
+            },
+        ),
+        Tool(
+            name="search_rationale",
+            description=(
+                "Search developer intent extracted from source comments — TODO, FIXME, "
+                "HACK, WHY, NOTE, BUG, WARNING, OPTIMIZE markers — each attached to the "
+                "function containing it. Use this to surface known workarounds and "
+                "unfinished work before modifying code."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "graph_id": {"type": "string", "description": "Graph ID from ingest_repo or list_graphs."},
+                    "query": {"type": "string", "description": "Free-text filter over note text/paths (optional)."},
+                    "marker": {"type": "string", "description": "Filter to one marker, e.g. HACK or FIXME (optional)."},
+                },
+                "required": ["graph_id"],
+            },
+        ),
+        Tool(
+            name="architecture_report",
+            description=(
+                "Generate the full repository architecture report (GRAPH_REPORT.md): "
+                "summary, language distribution, Mermaid diagram, major components, "
+                "most important functions by centrality, high-risk components, cycles, "
+                "dead code, documentation map, rationale highlights, and suggested "
+                "questions. The best single artifact for onboarding to a codebase."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "graph_id": {"type": "string", "description": "Graph ID from ingest_repo or list_graphs."},
+                },
+                "required": ["graph_id"],
+            },
+        ),
+        Tool(
             name="delete_graph",
             description=(
                 "Permanently delete a stored call graph and all its associated data "
@@ -304,6 +426,13 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
         "impact_analysis":  _handle_impact_analysis,
         "get_flow_summary": _handle_get_flow_summary,
         "delete_graph":     _handle_delete_graph,
+        "find_node":           _handle_find_node,
+        "shortest_path":       _handle_shortest_path,
+        "graph_hotspots":      _handle_graph_hotspots,
+        "find_cycles":         _handle_find_cycles,
+        "find_dead_code":      _handle_find_dead_code,
+        "search_rationale":    _handle_search_rationale,
+        "architecture_report": _handle_architecture_report,
     }
     handler = dispatch.get(name)
     if handler is None:
@@ -683,12 +812,210 @@ async def _handle_delete_graph(args: dict) -> list[TextContent]:
         return _error(str(exc))
 
 
+# ── Graph-intelligence tools ──────────────────────────────────────────────────
+
+async def _handle_find_node(args: dict) -> list[TextContent]:
+    graph_id = args.get("graph_id", "").strip()
+    name = args.get("name", "").strip()
+    if not graph_id or not name:
+        return _error("graph_id and name are required")
+    try:
+        result = await _request(
+            "get", "/mcp/find_node", timeout=SHORT_TIMEOUT,
+            params={"graph_id": graph_id, "name": name, "limit": args.get("limit", 10)},
+        )
+        matches = result.get("matches", [])
+        if not matches:
+            return _text(f"No symbols matching '{name}'. Try a shorter fragment or query_repo.")
+        lines = [f"Matches for '{name}' ({len(matches)}):"]
+        for m in matches:
+            loc = f"{m['file_path']}:{m['lineno']}" if m.get("lineno") else m["file_path"]
+            lines.append(f"  • {m['name']} [{m['type']}]  ({loc})")
+            if m.get("summary"):
+                lines.append(f"    {m['summary']}")
+        return _text("\n".join(lines))
+    except Exception as exc:
+        logger.exception("find_node failed")
+        return _error(str(exc))
+
+
+async def _handle_shortest_path(args: dict) -> list[TextContent]:
+    graph_id = args.get("graph_id", "").strip()
+    source = args.get("source", "").strip()
+    target = args.get("target", "").strip()
+    if not graph_id or not source or not target:
+        return _error("graph_id, source, and target are required")
+    try:
+        result = await _request(
+            "get", "/mcp/shortest_path", timeout=SHORT_TIMEOUT,
+            params={"graph_id": graph_id, "source": source, "target": target},
+        )
+        if not result.get("found"):
+            return _text(
+                f"No call path found from '{source}' to '{target}'.\n"
+                "Check the names with find_node — or the dependency may be "
+                "indirect (events, DB) rather than a call chain."
+            )
+        lines = [f"Call path {source} → {target} ({result['hops']} hops):"]
+        for i, step in enumerate(result["path"]):
+            prefix = "  " + ("└→ " if i else "   ")
+            lines.append(f"{prefix}{step['name']}  ({step['file_path']})")
+            if step.get("summary"):
+                lines.append(f"       {step['summary']}")
+        return _text("\n".join(lines))
+    except Exception as exc:
+        logger.exception("shortest_path failed")
+        return _error(str(exc))
+
+
+async def _handle_graph_hotspots(args: dict) -> list[TextContent]:
+    graph_id = args.get("graph_id", "").strip()
+    if not graph_id:
+        return _error("graph_id is required")
+    try:
+        result = await _request(
+            "get", "/mcp/hotspots", timeout=LONG_TIMEOUT,
+            params={"graph_id": graph_id},
+        )
+        lines = [f"Graph hotspots — {graph_id}"]
+        god = result.get("god_nodes", [])
+        if god:
+            lines.append("\nMost important functions (centrality):")
+            for i, g in enumerate(god[:10], 1):
+                lines.append(
+                    f"  {i}. {g['name']}  ({g['file_path']})  "
+                    f"[in={g['in_degree']} out={g['out_degree']} pr={g['pagerank']}]"
+                )
+        bridges = result.get("bridges", [])
+        if bridges:
+            lines.append("\nCritical bridges (removal disconnects the graph):")
+            for b in bridges[:8]:
+                lines.append(f"  • {b['name']}  ({b['file_path']})  degree={b['degree']}")
+        risk = result.get("high_risk", [])
+        if risk:
+            lines.append("\nHigh-risk components:")
+            for r in risk[:8]:
+                lines.append(f"  ⚠ {r['name']}  ({r['file_path']}) — {'; '.join(r['reasons'])}")
+        if len(lines) == 1:
+            lines.append("\nNo hotspots detected (graph may be very small).")
+        return _text("\n".join(lines))
+    except Exception as exc:
+        logger.exception("graph_hotspots failed")
+        return _error(str(exc))
+
+
+async def _handle_find_cycles(args: dict) -> list[TextContent]:
+    graph_id = args.get("graph_id", "").strip()
+    if not graph_id:
+        return _error("graph_id is required")
+    try:
+        result = await _request(
+            "get", "/mcp/cycles", timeout=LONG_TIMEOUT,
+            params={"graph_id": graph_id},
+        )
+        cycles = result.get("cycles", [])
+        couplings = result.get("surprising_couplings", [])
+        lines = [f"Dependency analysis — {graph_id}"]
+        if cycles:
+            lines.append(f"\nCircular dependencies ({len(cycles)}):")
+            for cyc in cycles[:10]:
+                chain = " → ".join(n["name"] for n in cyc)
+                lines.append(f"  ↻ {chain} → {cyc[0]['name']}")
+        else:
+            lines.append("\nNo circular dependencies found. 🎉")
+        if couplings:
+            lines.append("\nSurprising cross-module couplings (thin threads):")
+            for c in couplings[:10]:
+                lines.append(
+                    f"  • {c['from_module']} → {c['to_module']} "
+                    f"({c['edge_count']} edge(s), e.g. "
+                    f"{c['example']['source']} → {c['example']['target']})"
+                )
+        return _text("\n".join(lines))
+    except Exception as exc:
+        logger.exception("find_cycles failed")
+        return _error(str(exc))
+
+
+async def _handle_find_dead_code(args: dict) -> list[TextContent]:
+    graph_id = args.get("graph_id", "").strip()
+    if not graph_id:
+        return _error("graph_id is required")
+    try:
+        result = await _request(
+            "get", "/mcp/dead_code", timeout=LONG_TIMEOUT,
+            params={"graph_id": graph_id},
+        )
+        dead = result.get("dead_code", [])
+        if not dead:
+            return _text("No dead-code candidates found — every function has at least one caller.")
+        lines = [f"Dead-code candidates ({len(dead)}) — verify before deleting "
+                 "(dynamic dispatch / framework hooks cause false positives):"]
+        for d in dead[:30]:
+            lines.append(f"  • {d['name']}  ({d['file_path']})")
+        if len(dead) > 30:
+            lines.append(f"  … and {len(dead) - 30} more")
+        return _text("\n".join(lines))
+    except Exception as exc:
+        logger.exception("find_dead_code failed")
+        return _error(str(exc))
+
+
+async def _handle_search_rationale(args: dict) -> list[TextContent]:
+    graph_id = args.get("graph_id", "").strip()
+    if not graph_id:
+        return _error("graph_id is required")
+    try:
+        params = {"graph_id": graph_id}
+        if args.get("query"):
+            params["query"] = args["query"]
+        if args.get("marker"):
+            params["marker"] = args["marker"]
+        result = await _request(
+            "get", "/mcp/search_rationale", timeout=LONG_TIMEOUT, params=params,
+        )
+        notes = result.get("notes", [])
+        if not notes:
+            return _text("No rationale notes matched. Try without filters, or the repo has no marker comments.")
+        lines = [f"Developer rationale ({result.get('count', len(notes))} total, showing {len(notes)}):"]
+        for r in notes:
+            owner = f" in {r['attached_node_name']}" if r.get("attached_node_name") else ""
+            lines.append(f"\n  [{r['marker']}]{owner}  {r['file_path']}:{r['line']}")
+            lines.append(f"    {r['text']}")
+        return _text("\n".join(lines))
+    except Exception as exc:
+        logger.exception("search_rationale failed")
+        return _error(str(exc))
+
+
+async def _handle_architecture_report(args: dict) -> list[TextContent]:
+    graph_id = args.get("graph_id", "").strip()
+    if not graph_id:
+        return _error("graph_id is required")
+    try:
+        result = await _request(
+            "get", f"/architecture_report/{graph_id}", timeout=LONG_TIMEOUT,
+            params={"format": "json"},
+        )
+        md = result.get("markdown", "")
+        if not md:
+            return _error("Report generation returned no content")
+        return _text(md)
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 404:
+            return _error(f"Graph '{graph_id}' not found. Use list_graphs.")
+        return _error(f"HTTP {exc.response.status_code}: {exc.response.text[:200]}")
+    except Exception as exc:
+        logger.exception("architecture_report failed")
+        return _error(str(exc))
+
+
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 async def main():
     from mcp.server.stdio import stdio_server
     async with stdio_server() as (read_stream, write_stream):
-        logger.info("Flowify MCP server starting (6 tools)")
+        logger.info("Flowify MCP server starting (14 tools)")
         await app.run(
             read_stream,
             write_stream,
