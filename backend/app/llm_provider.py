@@ -679,6 +679,114 @@ class LLMProvider(ABC):
 
         return heuristic
 
+    def analyze_functions_batch(
+        self,
+        items: List[dict],
+        repo_context: dict,
+    ) -> List[dict]:
+        """Summarize AND semantically analyze a BATCH of functions in one call.
+
+        *items* is a list of ``{name, code, kind, neighbors}`` dicts.  Returns a
+        list of analysis dicts aligned to *items* (same length/order), each with
+        keys: summary, intent, complexity, criticality, patterns, side_effects,
+        semantic_edges, confidence.
+
+        This collapses the old two-call-per-function design (summarize + analyze)
+        into a single batched call, the dominant lever for cutting LLM cost.
+        Anything the model omits or mangles falls back to per-function heuristics
+        so the result always covers every input.
+        """
+        def _fallback(it: dict) -> dict:
+            h = _heuristic_semantic_analysis(it["name"], it.get("code", ""), repo_context)
+            code = it.get("code", "")
+            h["summary"] = (
+                _code_based_description(it["name"], code, it.get("kind", "function"))
+                if code.strip() else _heuristic_one_liner(it["name"], it.get("kind", "function"))
+            )
+            h["semantic_edges"] = []
+            return h
+
+        if not items:
+            return []
+
+        ctx = "\n".join([
+            f"Project type: {repo_context.get('project_type', 'unknown')}",
+            f"Domain: {repo_context.get('domain', 'general')}",
+            f"Architecture: {repo_context.get('architecture', 'unknown')}",
+        ])
+
+        blocks = []
+        for i, it in enumerate(items):
+            nb = it.get("neighbors") or []
+            nb_line = f"\n  neighbors: {', '.join(nb[:5])}" if nb else ""
+            blocks.append(
+                f"[{i}] {it.get('kind', 'function')} {it['name']}{nb_line}\n"
+                f"```\n{it.get('code', '')[:600]}\n```"
+            )
+        joined = "\n\n".join(blocks)
+
+        prompt = textwrap.dedent(f"""
+            You are analyzing functions for a code graph. Context:
+            {ctx}
+
+            For EACH numbered function below, produce one analysis object.
+
+            Functions:
+            {joined}
+
+            Respond with ONLY a JSON array of objects (no prose), one per function.
+            Each object MUST have:
+            - id: the function's number (integer, matching the [N] label)
+            - summary: ONE sentence (<=20 words) starting with a verb, what it does
+            - intent: one of [orchestration, transformation, validation, persistence, retrieval, configuration, error_handling, computation, presentation, unknown]
+            - complexity: one of [low, medium, high, very_high]
+            - criticality: one of [low, medium, high, critical]
+            - patterns: list of design pattern names (may be empty)
+            - side_effects: list from [file_io, network, database, state_mutation, logging, none]
+            - semantic_edges: list of {{type, target_name, description}} where type is one of [TRANSFORMS, VALIDATES, ORCHESTRATES, PERSISTS, RETRIEVES, CONFIGURES, HANDLES]
+        """).strip()
+
+        try:
+            raw = self.ask(prompt)
+            parsed = json.loads(raw[raw.index("["):raw.rindex("]") + 1])
+            if not isinstance(parsed, list):
+                raise ValueError("not a JSON array")
+        except Exception:
+            return [_fallback(it) for it in items]
+
+        # Index parsed objects by their declared id; fall back to positional.
+        by_id: Dict[int, dict] = {}
+        for pos, obj in enumerate(parsed):
+            if not isinstance(obj, dict):
+                continue
+            try:
+                by_id[int(obj.get("id", pos))] = obj
+            except (TypeError, ValueError):
+                by_id.setdefault(pos, obj)
+
+        results: List[dict] = []
+        for i, it in enumerate(items):
+            r = by_id.get(i)
+            if not isinstance(r, dict):
+                results.append(_fallback(it))
+                continue
+            h = _heuristic_semantic_analysis(it["name"], it.get("code", ""), repo_context)
+            summary = re.sub(r"^[*`#\-\s]+", "", str(r.get("summary") or "").strip())
+            summary = re.split(r"(?<=[.!?])\s+", summary)[0][:200] if summary else ""
+            if not summary:
+                summary = _code_based_description(it["name"], it.get("code", ""), it.get("kind", "function"))
+            results.append({
+                "summary": summary,
+                "intent": r.get("intent", h["intent"]),
+                "complexity": r.get("complexity", h["complexity"]),
+                "criticality": r.get("criticality", h["criticality"]),
+                "patterns": r.get("patterns", h["patterns"]),
+                "side_effects": r.get("side_effects", h["side_effects"]),
+                "semantic_edges": r.get("semantic_edges", []) or [],
+                "confidence": 0.8,
+            })
+        return results
+
 
 # ---------------------------------------------------------------------------
 # Heuristic-only provider (no LLM)
@@ -853,6 +961,19 @@ class HeuristicProvider(LLMProvider):
     def analyze_function_semantics(self, name, code, repo_context, neighbors=None) -> dict:
         return _heuristic_semantic_analysis(name, code, repo_context)
 
+    def analyze_functions_batch(self, items, repo_context) -> List[dict]:
+        out = []
+        for it in items:
+            code = it.get("code", "")
+            h = _heuristic_semantic_analysis(it["name"], code, repo_context)
+            h["summary"] = (
+                _code_based_description(it["name"], code, it.get("kind", "function"))
+                if code.strip() else _heuristic_one_liner(it["name"], it.get("kind", "function"))
+            )
+            h["semantic_edges"] = []
+            out.append(h)
+        return out
+
     def explain_flow_with_graph(
         self,
         query: str,
@@ -941,7 +1062,9 @@ class OllamaProvider(LLMProvider):
     ) -> None:
         self.host = (host or os.environ.get("OLLAMA_HOST", "http://localhost:11434")).rstrip("/")
         # Resolve model: explicit arg > env var > auto-pick
-        explicit = model or os.environ.get("OLLAMA_MODEL", "")
+        # (.strip() guards against a stray trailing space in OLLAMA_MODEL, which
+        # otherwise leaks into the model name and the provider display label.)
+        explicit = (model or os.environ.get("OLLAMA_MODEL", "")).strip()
         self.model = _ollama_best_model(self.host, explicit or None) or "llama3"
         print(f"[Ollama] host={self.host}  model={self.model}")
 
@@ -1208,3 +1331,17 @@ def analyze_function_semantics(
     neighbors: Optional[List[str]] = None,
 ) -> dict:
     return _get().analyze_function_semantics(name, code, repo_context, neighbors)
+
+def analyze_functions_batch(items: List[dict], repo_context: dict) -> List[dict]:
+    return _get().analyze_functions_batch(items, repo_context)
+
+
+_heuristic_singleton: LLMProvider | None = None
+
+
+def heuristic_provider() -> LLMProvider:
+    """Shared no-LLM provider for the free path (trivial functions)."""
+    global _heuristic_singleton
+    if _heuristic_singleton is None:
+        _heuristic_singleton = HeuristicProvider()
+    return _heuristic_singleton
