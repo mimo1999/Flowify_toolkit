@@ -57,7 +57,7 @@ class TestMCPIngestEndpoint:
         mock_payload.module_nodes = [Mock() for _ in range(3)]
         
         mock_pipeline.ingest.return_value = mock_payload
-        mock_storage.list_graphs.return_value = []
+        mock_storage.find_graph_by_repo_path.return_value = None
         mock_storage.load_meta.return_value = {
             "project_type": "web_api",
             "domain": "code_analysis",
@@ -95,7 +95,7 @@ class TestMCPIngestEndpoint:
         existing_payload.function_nodes = [Mock() for _ in range(5)]
         existing_payload.module_nodes = [Mock() for _ in range(2)]
         
-        mock_storage.list_graphs.return_value = ["existing-graph-456"]
+        mock_storage.find_graph_by_repo_path.return_value = "existing-graph-456"
         mock_storage.load_light.return_value = existing_payload
         mock_storage.load_meta.return_value = {"project_type": "library"}
         
@@ -124,7 +124,7 @@ class TestMCPIngestEndpoint:
         mock_payload.module_nodes = []
         
         mock_pipeline.ingest.return_value = mock_payload
-        mock_storage.list_graphs.return_value = []
+        mock_storage.find_graph_by_repo_path.return_value = None
         mock_storage.load_meta.return_value = None
         
         response = client.post(
@@ -139,7 +139,7 @@ class TestMCPIngestEndpoint:
     
     def test_ingest_error_handling(self, client, mock_pipeline, mock_storage):
         """Test error handling during ingestion."""
-        mock_storage.list_graphs.return_value = []
+        mock_storage.find_graph_by_repo_path.return_value = None
         mock_pipeline.ingest.side_effect = Exception("Ingestion failed")
         
         response = client.post(

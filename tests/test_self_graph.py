@@ -216,7 +216,7 @@ class TestPayloadFunctions:
     # llm_provider.py
     @pytest.mark.parametrize("name", [
         "get_provider", "ask", "ask_json", "summarize_function",
-        "summarize_module", "explain_flow", "interpret_query",
+        "summarize_module", "explain_flow_with_graph", "interpret_query",
     ])
     def test_llm_provider_fn_exists(self, name, fn_by_id):
         assert _has_fn(name, M["llm"], fn_by_id), f"llm_provider.py missing: {name}"
@@ -253,8 +253,14 @@ class TestPayloadCallEdges:
     """Critical cross-file call relationships that define Flowify's data-flow."""
 
     def test_ingest_repo_calls_pipeline_ingest(self, fn_by_id, calls_edges):
-        assert _calls("ingest_repo", M["main"], "ingest", M["pipeline"], fn_by_id, calls_edges), \
-            "main.ingest_repo must call pipeline.ingest"
+        # ingest_repo() now goes through the shared _do_ingest() helper (which
+        # resolves repo_path vs. repo_url, validates it, and tags the graph
+        # with the caller's session) rather than calling pipeline.ingest
+        # directly. Assert the two-hop chain instead of a direct edge.
+        assert _calls("ingest_repo", M["main"], "_do_ingest", M["main"], fn_by_id, calls_edges), \
+            "main.ingest_repo must call main._do_ingest"
+        assert _calls("_do_ingest", M["main"], "ingest", M["pipeline"], fn_by_id, calls_edges), \
+            "main._do_ingest must call pipeline.ingest"
 
     def test_pipeline_ingest_calls_build_function_graph(self, fn_by_id, calls_edges):
         assert _calls("ingest", M["pipeline"], "build_function_graph", M["gb"], fn_by_id, calls_edges), \
