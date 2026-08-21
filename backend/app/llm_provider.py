@@ -48,8 +48,13 @@ _CACHE_DIR = Path(os.environ.get("FLOWIFY_STORE", "_store")) / "llm_cache"
 _CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def _cache_path(prompt: str) -> Path:
-    h = hashlib.sha256(prompt.encode()).hexdigest()[:32]
+def _cache_path(prompt: str, namespace: str = "") -> Path:
+    # namespace (provider class + model) is mixed into the hash so a BYO-key
+    # request using e.g. gpt-4o-mini never reads or writes a cache entry
+    # produced by another provider/model for the same prompt text — without
+    # this, two users with different providers would silently share (and
+    # potentially leak) each other's cached LLM responses.
+    h = hashlib.sha256(f"{namespace}\n{prompt}".encode()).hexdigest()[:32]
     return _CACHE_DIR / f"{h}.json"
 
 
@@ -61,8 +66,8 @@ def _is_stub_response(text: str) -> bool:
     )
 
 
-def _cache_get(prompt: str) -> Optional[str]:
-    p = _cache_path(prompt)
+def _cache_get(prompt: str, namespace: str = "") -> Optional[str]:
+    p = _cache_path(prompt, namespace)
     if p.exists():
         try:
             val = json.loads(p.read_text(encoding="utf-8"))["response"]
@@ -78,12 +83,12 @@ def _cache_get(prompt: str) -> Optional[str]:
     return None
 
 
-def _cache_put(prompt: str, response: str) -> None:
+def _cache_put(prompt: str, response: str, namespace: str = "") -> None:
     """Write *response* to the disk cache.  Stubs and errors are never cached."""
     if _is_stub_response(response):
         return
     try:
-        _cache_path(prompt).write_text(
+        _cache_path(prompt, namespace).write_text(
             json.dumps({"prompt": prompt[:500], "response": response}),
             encoding="utf-8",
         )
@@ -342,13 +347,20 @@ class LLMProvider(ABC):
     def _call(self, prompt: str) -> str:
         """Make a raw LLM call and return the text response."""
 
+    def _cache_namespace(self) -> str:
+        """Provider class + model, mixed into the cache key so different
+        providers/models never share a cache entry. Override in subclasses
+        that have a `self.model`; defaults to just the class name."""
+        return f"{type(self).__name__}:{getattr(self, 'model', '')}"
+
     def ask(self, prompt: str) -> str:
         """Cached wrapper around `_call`.
 
         Only real LLM responses are cached — stubs and errors are never written
         to disk so the live LLM is retried on the next call.
         """
-        cached = _cache_get(prompt)
+        ns = self._cache_namespace()
+        cached = _cache_get(prompt, ns)
         if cached is not None:
             return cached
         try:
@@ -357,7 +369,7 @@ class LLMProvider(ABC):
             # Provider unavailable — return heuristic stub but do NOT cache so
             # the next call will try the live LLM again.
             return HeuristicProvider()._call(prompt) + f"\n[llm error: {exc}]"
-        _cache_put(prompt, out)  # _cache_put silently skips stubs/errors
+        _cache_put(prompt, out, ns)  # _cache_put silently skips stubs/errors
         return out
 
     def ask_json(self, prompt: str, fallback: dict) -> dict:
@@ -1232,6 +1244,73 @@ class OpenClawProvider(OpenAIProvider):
 
 
 # ---------------------------------------------------------------------------
+# Per-request provider override (BYO API key)
+# ---------------------------------------------------------------------------
+# The server never holds a paying LLM key (see README's Deployment section):
+# a hosted instance defaults to the heuristic provider, and a visitor who
+# wants real LLM answers pastes their own key in the browser, which rides
+# along as a header on each request. This ContextVar is how that per-request
+# choice reaches _get() below without threading a `provider` parameter
+# through every call site in pipeline/retrieval/module_abstractor/
+# llm_ingestion — those all call the module-level ask()/summarize_function()/
+# etc. helpers with no provider argument today.
+import contextvars
+
+_provider_override: contextvars.ContextVar[Optional["LLMProvider"]] = contextvars.ContextVar(
+    "flowify_llm_provider_override", default=None
+)
+
+
+def provider_from_spec(
+    provider: str,
+    api_key: str = "",
+    model: str = "",
+    base_url: str = "",
+) -> LLMProvider:
+    """Build a provider from an explicit spec (as opposed to get_provider()'s
+    environment-variable auto-detect). Used for BYO-key requests.
+
+    Only the providers where "bring your own key" is a coherent idea are
+    supported here — Bob is an IBM-internal endpoint and Copilot/OpenClaw are
+    fixed to a single env-configured account, so they're intentionally left
+    to the env-var path (get_provider()).
+    """
+    name = provider.lower().strip()
+    if name in ("ollama", "local"):
+        return OllamaProvider(host=base_url or None, model=model or None)
+    if name in ("claude", "anthropic"):
+        if not api_key:
+            raise ValueError("api_key is required for provider 'anthropic'")
+        return AnthropicProvider(api_key=api_key, model=model or None)
+    if name in ("openai", "gpt"):
+        if not api_key:
+            raise ValueError("api_key is required for provider 'openai'")
+        return OpenAIProvider(api_key=api_key, base_url=base_url or None, model=model or None)
+    raise ValueError(f"unsupported BYO provider: {provider!r} (use ollama, anthropic, or openai)")
+
+
+class provider_override:
+    """Context manager: run a block with a specific provider active,
+    regardless of what LLM_PROVIDER/auto-detect would otherwise pick.
+
+    Usage (typically inside a request-handling middleware):
+        with llm_provider.provider_override(provider_from_spec(...)):
+            ...call ask()/summarize_function()/etc as normal...
+    """
+
+    def __init__(self, provider: Optional[LLMProvider]):
+        self._provider = provider
+        self._token = None
+
+    def __enter__(self):
+        self._token = _provider_override.set(self._provider)
+        return self._provider
+
+    def __exit__(self, *exc):
+        _provider_override.reset(self._token)
+
+
+# ---------------------------------------------------------------------------
 # Provider factory
 # ---------------------------------------------------------------------------
 
@@ -1239,9 +1318,17 @@ def get_provider() -> LLMProvider:
     """Instantiate the configured provider.
 
     Priority:
+    0. A BYO-key provider_override() active for the current request (checked
+       here, not just in _get(), because pipeline.py and main.py both call
+       get_provider() directly in a few places rather than going through the
+       ask()/summarize_function() module-level helpers).
     1. LLM_PROVIDER env var (explicit choice)
     2. Auto-detect: Ollama on localhost → cloud API keys → heuristic stubs
     """
+    override = _provider_override.get()
+    if override is not None:
+        return override
+
     name = os.environ.get("LLM_PROVIDER", "").lower().strip()
 
     # ── Explicit selection ──────────────────────────────────────────────────
@@ -1290,6 +1377,9 @@ _provider: LLMProvider | None = None
 
 
 def _get() -> LLMProvider:
+    override = _provider_override.get()
+    if override is not None:
+        return override
     global _provider
     if _provider is None:
         _provider = get_provider()
