@@ -1,13 +1,30 @@
-"""FastAPI entrypoint — Phase 9 + MCP Integration."""
+"""FastAPI entrypoint — Phase 9 + MCP Integration.
+
+Routes are declared on ``api`` (an APIRouter) and mounted twice: once at
+``/api`` (the path the production frontend and reverse proxies use) and once
+at root with no prefix (kept for backward compatibility — the MCP server,
+``tests/test_integration.py`` and ``tests/test_mcp_endpoints.py`` all call
+root paths like ``/mcp/ingest`` directly). If a built frontend is present at
+``FLOWIFY_FRONTEND_DIST`` it is mounted at ``/`` last, so it does not shadow
+either router.
+"""
 from __future__ import annotations
 import hashlib
 import logging
+import os
 import re as _re
 import uuid
-from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
+from pathlib import Path as _Path
 
-from . import bob_export, pipeline, storage, retrieval, module_abstractor, learning
+from fastapi import APIRouter, FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.staticfiles import StaticFiles
+
+from . import (
+    bob_export, pipeline, storage, retrieval, module_abstractor, learning,
+    knowledge as knowledge_mod, graph_analytics, report as report_mod,
+)
 from .models import (
     BobGraphRequest, IngestRequest, UpdateRequest, QueryRequest, QueryResponse,
     FeedbackRequest, MCPIngestResponse, MCPQueryResponse,
@@ -18,20 +35,113 @@ from .models import (
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# ── Deployment mode ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+# "local"  — single-user dev/desktop use. Local filesystem paths allowed,
+#            /shutdown enabled, all graphs visible to everyone.
+# "server" — public hosted instance. Git-URL ingest only, local paths
+#            restricted to FLOWIFY_ALLOWED_ROOTS, /shutdown disabled, graphs
+#            scoped to the caller's X-Flowify-Session header.
+FLOWIFY_MODE = os.environ.get("FLOWIFY_MODE", "local").lower().strip()
+IS_SERVER_MODE = FLOWIFY_MODE == "server"
+
+_cors_env = os.environ.get("FLOWIFY_CORS_ORIGINS", "").strip()
+CORS_ORIGINS = [o.strip() for o in _cors_env.split(",") if o.strip()] or ["*"]
 
 app = FastAPI(title="Flowify AI", version="0.1.0")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], allow_methods=["*"], allow_headers=["*"],
+    allow_origins=CORS_ORIGINS, allow_methods=["*"], allow_headers=["*"],
 )
+app.add_middleware(GZipMiddleware, minimum_size=1024)
+
+api = APIRouter()
+
+# ── Session scoping (server mode only) ───────────────────────────────────────
+# This is isolation, not authentication: it stops one anonymous visitor from
+# casually reading another visitor's graph (and its code snippets) via
+# /export, /graph, /query, etc. Anyone who guesses a session id still sees
+# that session's graphs — there is no login. Sessions come from a header set
+# by a middleware (not a route dependency) so the ~40 existing handlers don't
+# each need a `request: Request` parameter added just to read it.
+import contextvars
+
+_session_ctx: contextvars.ContextVar[str] = contextvars.ContextVar("flowify_session", default="")
 
 
-@app.get("/")
+@app.middleware("http")
+async def _session_middleware(request: Request, call_next):
+    token = _session_ctx.set(request.headers.get("x-flowify-session", ""))
+    try:
+        return await call_next(request)
+    finally:
+        _session_ctx.reset(token)
+
+
+@app.middleware("http")
+async def _byo_provider_middleware(request: Request, call_next):
+    """Bring-your-own-key: a request carrying X-Flowify-Provider (+
+    X-Flowify-Api-Key / X-Flowify-Model / X-Flowify-Base-Url) gets that
+    provider for every LLM call made while handling it — ingest, query,
+    module summaries, everything — via llm_provider's ContextVar override.
+    No key is ever logged or persisted; it lives only in this request's
+    context and is discarded when the request finishes.
+
+    This is what lets a hosted instance run with zero server-side LLM spend
+    (LLM_PROVIDER=heuristic) while still giving visitors real LLM answers if
+    they supply their own key — see README's Deployment section.
+    """
+    provider_name = request.headers.get("x-flowify-provider", "").strip()
+    if not provider_name:
+        return await call_next(request)
+
+    from . import llm_provider
+
+    try:
+        override = llm_provider.provider_from_spec(
+            provider_name,
+            api_key=request.headers.get("x-flowify-api-key", ""),
+            model=request.headers.get("x-flowify-model", ""),
+            base_url=request.headers.get("x-flowify-base-url", ""),
+        )
+    except ValueError as e:
+        from fastapi.responses import JSONResponse
+        return JSONResponse(status_code=400, content={"detail": str(e)})
+
+    with llm_provider.provider_override(override):
+        return await call_next(request)
+
+
+def _check_owned(graph_id: str) -> None:
+    """Raise 404 (never 403 — don't confirm the graph exists to a non-owner)
+    if this graph belongs to a different session. No-op outside server mode."""
+    if not IS_SERVER_MODE:
+        return
+    owner = storage.get_owner(graph_id)
+    if owner and owner != _session_ctx.get():
+        raise HTTPException(status_code=404, detail="Graph not found")
+
+
+@api.get("/status")
 def root():
-    return {"service": "flowify", "graphs": storage.list_graphs()}
+    """Service status. Formerly mounted at '/' — moved so '/' is free for the
+    built frontend (see the StaticFiles mount at the bottom of this file)."""
+    scope_owner = _session_ctx.get() if IS_SERVER_MODE else None
+    return {"service": "flowify", "mode": FLOWIFY_MODE, "graphs": storage.list_graphs(owner=scope_owner)}
 
 
-@app.get("/provider_info")
+@api.get("/config")
+def get_config():
+    """Deployment-mode flags the frontend needs before the user does anything:
+    whether to show the shutdown button, whether local paths are accepted."""
+    return {
+        "mode": FLOWIFY_MODE,
+        "server_mode": IS_SERVER_MODE,
+        "accepts_local_paths": not IS_SERVER_MODE,
+        "accepts_git_urls": True,
+    }
+
+
+@api.get("/provider_info")
 def provider_info():
     """Return the active LLM provider so the UI can show a stub warning."""
     from . import llm_provider
@@ -58,6 +168,60 @@ def provider_info():
     }
 
 
+@api.post("/shutdown")
+def shutdown():
+    """Dev convenience: stop the backend, and best-effort stop the frontend dev
+    server (the process listening on the Vite port).
+
+    Triggered by the UI's shutdown button.  Returns immediately, then a daemon
+    thread tears down both processes so the HTTP response can flush first.
+
+    Disabled entirely in server mode (FLOWIFY_MODE=server) — this kills the
+    process with no auth check, which is fine for a single-user local
+    instance and not fine for a shared public one.
+    """
+    if IS_SERVER_MODE:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    import os, platform, subprocess, threading, time
+
+    frontend_port = int(os.environ.get("FLOWIFY_FRONTEND_PORT", "5173"))
+
+    def _kill_port(port: int) -> None:
+        """Best-effort terminate whatever LISTENs on *port* (not ourselves)."""
+        try:
+            if platform.system() == "Windows":
+                out = subprocess.run(
+                    ["netstat", "-ano"], capture_output=True, text=True, timeout=5
+                ).stdout
+                pids = {
+                    line.split()[-1]
+                    for line in out.splitlines()
+                    if f":{port} " in line and "LISTENING" in line
+                }
+                for pid in pids:
+                    if pid and pid not in ("0", str(os.getpid())):
+                        subprocess.run(["taskkill", "/PID", pid, "/F"],
+                                       capture_output=True, timeout=5)
+            else:
+                out = subprocess.run(
+                    ["lsof", "-ti", f":{port}"], capture_output=True, text=True, timeout=5
+                ).stdout
+                for pid in out.split():
+                    if pid and pid != str(os.getpid()):
+                        os.kill(int(pid), 15)
+        except Exception:
+            pass
+
+    def _teardown() -> None:
+        time.sleep(0.4)            # let the response flush to the browser
+        _kill_port(frontend_port)  # frontend (Vite dev server)
+        os._exit(0)                # backend (this process)
+
+    threading.Thread(target=_teardown, daemon=True).start()
+    return {"status": "shutting_down", "frontend_port": frontend_port}
+
+
 def _generate_repo_id(repo_path: str, custom_id: str | None = None) -> str:
     """Generate stable repo_id from path or use custom ID."""
     if custom_id:
@@ -72,28 +236,96 @@ def _serialize_payload(payload):
     return func_by_id, function_edges
 
 
-@app.post("/ingest_repo")
+_ALLOWED_ROOTS = [
+    _Path(p).resolve() for p in os.environ.get("FLOWIFY_ALLOWED_ROOTS", "").split(os.pathsep)
+    if p.strip()
+]
+
+
+def _validate_local_path(repo_path: str) -> str:
+    """In server mode, resolve *repo_path* and reject anything that doesn't
+    exist or falls outside FLOWIFY_ALLOWED_ROOTS. Without this, POST
+    /ingest_repo {"repo_path": "/"} is an arbitrary host-filesystem reader —
+    see backend/app/cloner.py's docstring for the matching threat model on
+    the git-URL side.
+
+    Local mode passes *repo_path* through unchanged (no resolution, no
+    existence check) — that's a single-user desktop instance where the
+    caller already controls the filesystem, and it preserves the exact
+    ingest behavior every existing test and MCP client already relies on.
+    """
+    if not IS_SERVER_MODE:
+        return repo_path
+
+    resolved = _Path(repo_path).resolve()
+    if not resolved.is_dir():
+        raise HTTPException(status_code=400, detail=f"repo_path is not a directory: {repo_path}")
+    if not _ALLOWED_ROOTS:
+        raise HTTPException(
+            status_code=403,
+            detail="local filesystem paths are not accepted on this server; pass repo_url instead",
+        )
+    if not any(resolved == root or root in resolved.parents for root in _ALLOWED_ROOTS):
+        raise HTTPException(status_code=403, detail="repo_path is outside the allowed roots")
+    return str(resolved)
+
+
+def _do_ingest(req: IngestRequest):
+    """Resolve an IngestRequest (repo_path OR repo_url) to a local directory,
+    run the existing synchronous pipeline.ingest() unchanged, and tag the
+    result with the caller's session (server mode only).
+
+    For a git URL: clone to a throwaway temp dir, ingest it, delete the
+    clone, then rewrite the stored repo_path to the origin URL — so exports
+    and the UI show "github.com/..." rather than a temp path that no longer
+    exists.
+    """
+    from . import cloner
+
+    owner = (_session_ctx.get() or None) if IS_SERVER_MODE else None
+
+    if req.repo_url:
+        try:
+            display_path = cloner.validate_repo_url(req.repo_url)
+            with cloner.clone_to_temp(req.repo_url) as local_path:
+                payload = pipeline.ingest(str(local_path))
+        except cloner.InvalidRepoUrl as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        storage.set_repo_path(payload.graph_id, display_path)
+        payload.repo_path = display_path
+    elif req.repo_path:
+        resolved = _validate_local_path(req.repo_path)
+        payload = pipeline.ingest(resolved)
+    else:
+        raise HTTPException(status_code=400, detail="repo_path or repo_url is required")
+
+    if owner:
+        storage.set_owner(payload.graph_id, owner)
+    return payload
+
+
+@api.post("/ingest_repo")
 def ingest_repo(req: IngestRequest):
     """Legacy ingest endpoint - maintained for backward compatibility."""
-    payload = pipeline.ingest(req.repo_path)
-    
+    payload = _do_ingest(req)
+
     # Load repository context
     repo_context = storage.load_meta(payload.graph_id, "repo_context")
-    
+
     response = {
         "graph_id": payload.graph_id,
         "function_count": len(payload.function_nodes),
         "module_count": len(payload.module_nodes),
     }
-    
+
     # Include repository context if available
     if repo_context:
         response["repo_context"] = repo_context
-    
+
     return response
 
 
-@app.post("/mcp/ingest", response_model=MCPIngestResponse)
+@api.post("/mcp/ingest", response_model=MCPIngestResponse)
 def mcp_ingest_repo(req: IngestRequest):
     """MCP-optimized ingest endpoint with stable repo_id and normalized response.
     
@@ -102,58 +334,72 @@ def mcp_ingest_repo(req: IngestRequest):
     - Consistent error format
     - Structured response for MCP tools
     """
+    source = req.repo_path or req.repo_url or ""
     try:
-        logger.info(f"MCP ingest request for repo: {req.repo_path}")
-        
+        logger.info(f"MCP ingest request for repo: {source}")
+
         # Generate stable repo_id
-        repo_id = _generate_repo_id(req.repo_path, req.repo_id)
-        
-        # Check if already ingested (idempotent).
-        for graph_id in storage.list_graphs():
-            payload = storage.load_light(graph_id)
-            if payload and payload.repo_path == req.repo_path:
-                logger.info(f"Repository already ingested with graph_id: {graph_id}")
-                repo_context = storage.load_meta(graph_id, "repo_context")
+        repo_id = _generate_repo_id(source, req.repo_id)
+
+        # Check if already ingested (idempotent) — an indexed lookup, not a
+        # scan of every stored graph.
+        existing_id = storage.find_graph_by_repo_path(source)
+        if existing_id:
+            payload = storage.load_light(existing_id)
+            if payload:
+                logger.info(f"Repository already ingested with graph_id: {existing_id}")
+                repo_context = storage.load_meta(existing_id, "repo_context")
                 return MCPIngestResponse(
                     success=True,
-                    graph_id=graph_id,
+                    graph_id=existing_id,
                     repo_id=repo_id,
-                    repo_path=req.repo_path,
+                    repo_path=payload.repo_path,
                     function_count=len(payload.function_nodes),
                     module_count=len(payload.module_nodes),
                     repo_context=repo_context
                 )
-        
+
         # Perform ingestion
-        payload = pipeline.ingest(req.repo_path)
+        payload = _do_ingest(req)
         repo_context = storage.load_meta(payload.graph_id, "repo_context")
-        
+
         logger.info(f"Ingestion complete: graph_id={payload.graph_id}, functions={len(payload.function_nodes)}")
-        
+
         return MCPIngestResponse(
             success=True,
             graph_id=payload.graph_id,
             repo_id=repo_id,
-            repo_path=req.repo_path,
+            repo_path=payload.repo_path,
             function_count=len(payload.function_nodes),
             module_count=len(payload.module_nodes),
             repo_context=repo_context
         )
-        
-    except Exception as e:
-        logger.error(f"Ingestion failed for {req.repo_path}: {str(e)}", exc_info=True)
+
+    except HTTPException as e:
+        logger.error(f"Ingestion rejected for {source}: {e.detail}")
         return MCPIngestResponse(
             success=False,
             graph_id="",
-            repo_id=_generate_repo_id(req.repo_path, req.repo_id),
-            repo_path=req.repo_path,
+            repo_id=_generate_repo_id(source, req.repo_id),
+            repo_path=source,
+            function_count=0,
+            module_count=0,
+            error=str(e.detail)
+        )
+    except Exception as e:
+        logger.error(f"Ingestion failed for {source}: {str(e)}", exc_info=True)
+        return MCPIngestResponse(
+            success=False,
+            graph_id="",
+            repo_id=_generate_repo_id(source, req.repo_id),
+            repo_path=source,
             function_count=0,
             module_count=0,
             error=str(e)
         )
 
 
-@app.post("/bob/graph")
+@api.post("/bob/graph")
 def build_graph_for_bob(req: BobGraphRequest):
     """Ingest a repo root and return a Bob-ready generated graph.
 
@@ -161,11 +407,16 @@ def build_graph_for_bob(req: BobGraphRequest):
     tooling that need the graph payload immediately instead of a graph id to
     query through the Flowify UI endpoints.
     """
+    resolved = _validate_local_path(req.repo_path)
+    # In server mode, full-graph responses (every code_snippet, inline) are
+    # multi-MB and unauthenticated — require it to be asked for explicitly
+    # rather than defaulting to True as the model does for local/MCP use.
+    include_full = req.include_full_graph and not IS_SERVER_MODE
     try:
         return bob_export.build_bob_graph_response(
-            req.repo_path,
+            resolved,
             depth=req.depth,
-            include_full_graph=req.include_full_graph,
+            include_full_graph=include_full,
             include_view=req.include_view,
             include_llm_ingestion=req.include_llm_ingestion,
         )
@@ -173,9 +424,10 @@ def build_graph_for_bob(req: BobGraphRequest):
         raise HTTPException(400, str(exc)) from exc
 
 
-@app.get("/entry_points")
+@api.get("/entry_points")
 def get_entry_points(graph_id: str, max_count: int = 4):
     """Return up to `max_count` inferred entry-point files for the initial view."""
+    _check_owned(graph_id)
     payload = storage.load_light(graph_id)
     if payload is None:
         raise HTTPException(404, "graph not found")
@@ -187,7 +439,7 @@ def get_entry_points(graph_id: str, max_count: int = 4):
     return {"graph_id": graph_id, "nodes": nodes, "edges": []}
 
 
-@app.get("/expand")
+@api.get("/expand")
 def expand_graph_node(graph_id: str, node_id: str, action: str = "callees"):
     """Lazy-expand a node — returns its direct children and relevant edges.
 
@@ -195,6 +447,7 @@ def expand_graph_node(graph_id: str, node_id: str, action: str = "callees"):
       action=callees   → show files this file calls
       action=functions → drill into the file's symbols
     """
+    _check_owned(graph_id)
     payload = storage.load_light(graph_id)
     if payload is None:
         raise HTTPException(404, "graph not found")
@@ -209,7 +462,7 @@ def expand_graph_node(graph_id: str, node_id: str, action: str = "callees"):
     )
 
 
-@app.get("/graph")
+@api.get("/graph")
 def get_graph(graph_id: str, depth: int = 1):
     """Get graph at specified depth with enhanced module metadata.
 
@@ -217,6 +470,7 @@ def get_graph(graph_id: str, depth: int = 1):
     Depth 2: Shows file-level submodules
     Depth 3: Shows individual functions
     """
+    _check_owned(graph_id)
     payload = storage.load_light(graph_id)
     if payload is None:
         raise HTTPException(404, "graph not found")
@@ -240,9 +494,10 @@ def get_graph(graph_id: str, depth: int = 1):
     return view
 
 
-@app.post("/query", response_model=QueryResponse)
+@api.post("/query", response_model=QueryResponse)
 def query_graph(req: QueryRequest):
     """Query endpoint — returns graph-grounded explanation + structured execution path."""
+    _check_owned(req.graph_id)
     payload = storage.load_light(req.graph_id)
     if payload is None:
         raise HTTPException(404, "graph not found")
@@ -271,7 +526,7 @@ def query_graph(req: QueryRequest):
     )
 
 
-@app.post("/mcp/query", response_model=MCPQueryResponse)
+@api.post("/mcp/query", response_model=MCPQueryResponse)
 def mcp_query_repo(req: QueryRequest):
     """MCP-optimized query endpoint with normalized response.
     
@@ -280,6 +535,7 @@ def mcp_query_repo(req: QueryRequest):
     - Structured function metadata
     - Clear execution path
     """
+    _check_owned(req.graph_id)
     try:
         logger.info(f"MCP query request: graph_id={req.graph_id}, query={req.query}")
         
@@ -350,7 +606,7 @@ def mcp_query_repo(req: QueryRequest):
         )
 
 
-@app.get("/impact", response_model=ImpactAnalysis)
+@api.get("/impact", response_model=ImpactAnalysis)
 def get_impact(graph_id: str, node_id: str):
     """Change-impact analysis for a given node.
 
@@ -361,6 +617,7 @@ def get_impact(graph_id: str, node_id: str):
       - affected_modules: module names that would be impacted
       - risk_level: low / medium / high / critical
     """
+    _check_owned(graph_id)
     payload = storage.load_light(graph_id)
     if payload is None:
         raise HTTPException(404, "graph not found")
@@ -453,8 +710,21 @@ def get_impact(graph_id: str, node_id: str):
     )
 
 
-@app.post("/update")
+@api.post("/update")
 def update_graph(req: UpdateRequest):
+    _check_owned(req.graph_id)
+    existing = storage.load_light(req.graph_id)
+    if existing and existing.repo_path.startswith(("https://", "http://")):
+        # pipeline.update() diffs an on-disk git checkout via GitPython; a
+        # URL-sourced graph has no such checkout (it was cloned to a temp
+        # dir that's already been deleted). Re-ingesting from the URL is a
+        # full re-clone, not an incremental diff, so ask the caller to use
+        # /ingest_repo (or /ingest) again rather than silently 500ing here.
+        raise HTTPException(
+            status_code=400,
+            detail="This graph was ingested from a git URL; re-run ingest with the "
+                   "same repo_url to refresh it instead of /update.",
+        )
     payload = pipeline.update(req.graph_id)
     if payload is None:
         raise HTTPException(404, "graph not found")
@@ -465,7 +735,7 @@ def update_graph(req: UpdateRequest):
     }
 
 
-@app.post("/generate_descriptions")
+@api.post("/generate_descriptions")
 def generate_descriptions(graph_id: str):
     """Generate (or regenerate) LLM 1-line descriptions for every node in an
     existing graph that currently has no real summary (stub or empty).
@@ -474,6 +744,7 @@ def generate_descriptions(graph_id: str):
     (already-generated descriptions are not overwritten).
     Returns counts of how many were newly generated vs already present.
     """
+    _check_owned(graph_id)
     payload = storage.load(graph_id)
     if payload is None:
         raise HTTPException(404, "graph not found")
@@ -517,13 +788,14 @@ def generate_descriptions(graph_id: str):
     }
 
 
-@app.get("/repo_context")
+@api.get("/repo_context")
 def get_repo_context(graph_id: str):
     """Get repository context analysis for a graph.
     
     Returns the Bob-analyzed (or heuristic) repository metadata including
     project type, domain, architecture, tech stack, and purpose.
     """
+    _check_owned(graph_id)
     # Check if graph exists
     payload = storage.load_light(graph_id)
     if payload is None:
@@ -541,13 +813,14 @@ def get_repo_context(graph_id: str):
     }
 
 
-@app.get("/semantic_analysis")
+@api.get("/semantic_analysis")
 def get_semantic_analysis(graph_id: str):
     """Get semantic analysis results for a graph.
     
     Returns semantic metadata for all functions and semantic edges.
     Phase 2 feature.
     """
+    _check_owned(graph_id)
     payload = storage.load_light(graph_id)
     if payload is None:
         raise HTTPException(404, "graph not found")
@@ -590,9 +863,10 @@ def get_semantic_analysis(graph_id: str):
     }
 
 
-@app.get("/llm_ingestion")
+@api.get("/llm_ingestion")
 def get_llm_ingestion(graph_id: str):
     """Get the node-level JSON returned by the LLM ingestion stage."""
+    _check_owned(graph_id)
     payload = storage.load_light(graph_id)
     if payload is None:
         raise HTTPException(404, "graph not found")
@@ -602,9 +876,10 @@ def get_llm_ingestion(graph_id: str):
     return llm_ingestion
 
 
-@app.get("/llm_ingestion_prompt")
+@api.get("/llm_ingestion_prompt")
 def get_llm_ingestion_prompt(graph_id: str):
     """Get the prompt used for the LLM ingestion stage."""
+    _check_owned(graph_id)
     payload = storage.load_light(graph_id)
     if payload is None:
         raise HTTPException(404, "graph not found")
@@ -621,12 +896,13 @@ def get_llm_ingestion_prompt(graph_id: str):
 
 # Phase 3: Learning and Feedback Endpoints
 
-@app.post("/feedback")
+@api.post("/feedback")
 def submit_feedback(req: FeedbackRequest):
     """Submit user feedback on query results.
 
     Helps the system learn which results are helpful and improve over time.
     """
+    _check_owned(req.graph_id)
     # Normalise numeric ratings (1-5 stars) to the string literals the
     # learning layer expects.  String ratings pass through unchanged.
     rating = req.rating
@@ -645,12 +921,13 @@ def submit_feedback(req: FeedbackRequest):
     return {"status": "feedback recorded", "query_id": req.query_id}
 
 
-@app.get("/module_details")
+@api.get("/module_details")
 def get_module_details(graph_id: str, module_id: str):
     """Get detailed information about a specific module including control flow groups.
     
     Returns module metadata, entry points, control flow patterns, and function listings.
     """
+    _check_owned(graph_id)
     payload = storage.load_light(graph_id)
     if payload is None:
         raise HTTPException(404, "graph not found")
@@ -726,12 +1003,13 @@ def get_module_details(graph_id: str, module_id: str):
     }
 
 
-@app.get("/analytics")
+@api.get("/analytics")
 def get_analytics(graph_id: str):
     """Get learning analytics for a graph.
     
     Returns statistics about queries, helpful rate, learned terms, etc.
     """
+    _check_owned(graph_id)
     payload = storage.load_light(graph_id)
     if payload is None:
         raise HTTPException(404, "graph not found")
@@ -739,12 +1017,13 @@ def get_analytics(graph_id: str):
     return analytics
 
 
-@app.get("/hot_nodes")
+@api.get("/hot_nodes")
 def get_hot_nodes(graph_id: str, limit: int = 10):
     """Get most frequently accessed nodes.
 
     Shows which functions are queried most often.
     """
+    _check_owned(graph_id)
     payload = storage.load_light(graph_id)
     if payload is None:
         raise HTTPException(404, "graph not found")
@@ -768,12 +1047,13 @@ def get_hot_nodes(graph_id: str, limit: int = 10):
     return {"graph_id": graph_id, "hot_nodes": enriched}
 
 
-@app.get("/common_paths")
+@api.get("/common_paths")
 def get_common_paths(graph_id: str, min_frequency: int = 3):
     """Get frequently traversed execution paths.
     
     Shows common patterns in how users explore the codebase.
     """
+    _check_owned(graph_id)
     payload = storage.load_light(graph_id)
     if payload is None:
         raise HTTPException(404, "graph not found")
@@ -799,12 +1079,13 @@ def get_common_paths(graph_id: str, min_frequency: int = 3):
     return {"graph_id": graph_id, "common_paths": enriched_paths}
 
 
-@app.post("/update_importance")
+@api.post("/update_importance")
 def update_node_importance(graph_id: str):
     """Update node criticality based on usage patterns.
     
     Adjusts semantic metadata based on actual usage data.
     """
+    _check_owned(graph_id)
     payload = storage.load(graph_id)
     if payload is None:
         raise HTTPException(404, "graph not found")
@@ -814,9 +1095,10 @@ def update_node_importance(graph_id: str):
     return {"status": "importance updated", "graph_id": graph_id}
 
 
-@app.delete("/graphs/{graph_id}")
+@api.delete("/graphs/{graph_id}")
 def delete_graph(graph_id: str):
     """Permanently delete a stored graph and all its associated data."""
+    _check_owned(graph_id)
     if not storage.delete(graph_id):
         raise HTTPException(404, "graph not found")
     return {"deleted": graph_id}
@@ -826,7 +1108,7 @@ def delete_graph(graph_id: str):
 # Graph export endpoint
 # ---------------------------------------------------------------------------
 
-@app.get("/export/{graph_id}")
+@api.get("/export/{graph_id}")
 def export_graph(
     graph_id: str,
     format: str = "json",
@@ -839,6 +1121,7 @@ def export_graph(
                            mermaid.live or any Markdown renderer
     max_nodes: cap how many nodes to include (default 80)
     """
+    _check_owned(graph_id)
     from datetime import datetime as _dt
     from fastapi.responses import JSONResponse, PlainTextResponse
 
@@ -897,8 +1180,16 @@ def export_graph(
         )
 
     elif format == "mermaid":
+        # Counter-based id map, not a truncated regex-sanitized node id: two
+        # distinct node ids that only differ after character 40 used to
+        # collapse into the same Mermaid node id via `[:40]` truncation,
+        # silently merging unrelated functions in the diagram.
+        _id_map: dict[str, str] = {}
+
         def _safe(nid: str) -> str:
-            return _re.sub(r"[^A-Za-z0-9_]", "_", nid)[:40]
+            if nid not in _id_map:
+                _id_map[nid] = f"n{len(_id_map)}"
+            return _id_map[nid]
 
         lines = ["flowchart TD"]
         for n in top_nodes:
@@ -930,20 +1221,35 @@ def export_graph(
             },
         )
 
-    raise HTTPException(400, f"Unknown format '{format}'. Use 'json' or 'mermaid'.")
+    elif format == "llm":
+        # The zero-LLM-cost path: a single self-contained Markdown document
+        # (repo context, architecture, god nodes, cycles, rationale notes)
+        # meant to be pasted directly into any chatbot — this is the actual
+        # "export the graph to use in another LLM" product, not a stub.
+        markdown = report_mod.build_report(graph_id, payload)
+        return PlainTextResponse(
+            content=markdown,
+            media_type="text/markdown",
+            headers={
+                "Content-Disposition": f'attachment; filename="GRAPH_REPORT-{graph_id}.md"',
+            },
+        )
+
+    raise HTTPException(400, f"Unknown format '{format}'. Use 'json', 'mermaid', or 'llm'.")
 
 
 # ---------------------------------------------------------------------------
 # Flow summary endpoints
 # ---------------------------------------------------------------------------
 
-@app.get("/flow_summary/{graph_id}")
+@api.get("/flow_summary/{graph_id}")
 def get_flow_summary(graph_id: str):
     """Return the repository flow summary generated at ingest time.
 
     404 if the graph doesn't exist, or if it was ingested before the flow
     summary feature existed (use POST to generate one on demand).
     """
+    _check_owned(graph_id)
     data = storage.load_meta(graph_id, "flow_summary")
     if data is None:
         if storage.load_light(graph_id) is None:
@@ -952,13 +1258,14 @@ def get_flow_summary(graph_id: str):
     return data
 
 
-@app.post("/flow_summary/{graph_id}")
+@api.post("/flow_summary/{graph_id}")
 def generate_flow_summary(graph_id: str):
     """(Re)generate the flow summary for an existing graph.
 
     Useful for graphs ingested before the feature shipped, or to refresh after
     switching to a better LLM provider.
     """
+    _check_owned(graph_id)
     from .models import RepositoryContext
 
     payload = storage.load_light(graph_id)
@@ -977,10 +1284,182 @@ def generate_flow_summary(graph_id: str):
 
 
 # ---------------------------------------------------------------------------
+# Knowledge layer: documents, rationale, provenance, analytics, report
+# ---------------------------------------------------------------------------
+
+def _require_payload(graph_id: str):
+    """Load a graph payload (light) or raise 404. Shared by every endpoint
+    below that needs "the graph, or a 404" — keeps that one-liner from being
+    re-typed at each call site."""
+    payload = storage.load_light(graph_id)
+    if payload is None:
+        raise HTTPException(404, "graph not found")
+    _check_owned(graph_id)
+    return payload
+
+
+def _get_or_build_knowledge(graph_id: str, rebuild: bool = False, payload=None) -> dict:
+    """Load the cached knowledge index, building it on demand for old graphs.
+
+    Pass `payload` when the caller already has it loaded, to avoid loading
+    the same graph twice within one request.
+    """
+    if not rebuild:
+        data = storage.load_meta(graph_id, "knowledge")
+        if data is not None:
+            return data
+    if payload is None:
+        payload = _require_payload(graph_id)
+    kidx = knowledge_mod.build_knowledge(payload.repo_path, payload.function_nodes)
+    kidx.graph_id = graph_id
+    data = kidx.model_dump()
+    storage.store_meta(graph_id, "knowledge", data)
+    return data
+
+
+@api.get("/knowledge/{graph_id}")
+def get_knowledge(graph_id: str):
+    """Return the documentation + rationale knowledge layer for a graph.
+
+    Documents (README/ADR/RFC/guides/wikis) are first-class nodes; doc_edges
+    connect them to the code nodes they reference, each with provenance
+    (source, confidence, evidence). Built at ingest; auto-built here for
+    graphs that predate the feature.
+    """
+    # No separate existence check needed: cached metadata only exists for
+    # graphs that were ingested, and a cache miss falls through to
+    # _require_payload inside _get_or_build_knowledge.
+    return _get_or_build_knowledge(graph_id)
+
+
+@api.post("/knowledge/{graph_id}")
+def rebuild_knowledge(graph_id: str):
+    """Force-rebuild the knowledge layer (after docs change on disk)."""
+    return _get_or_build_knowledge(graph_id, rebuild=True)
+
+
+@api.get("/node_references")
+def get_node_references(graph_id: str, node_id: str):
+    """Everything the knowledge layer knows about one code node:
+
+    - documents that reference it (with section, line, confidence, evidence)
+    - rationale notes (TODO/FIXME/HACK/WHY/...) inside its source span
+    - provenance for its incoming/outgoing call edges
+    """
+    payload = _require_payload(graph_id)
+
+    func_by_id = {n.id: n for n in payload.function_nodes}
+    target = func_by_id.get(node_id)
+    if target is None:
+        raise HTTPException(404, "node not found")
+
+    data = _get_or_build_knowledge(graph_id, payload=payload)
+    docs_by_id = {d["id"]: d for d in data.get("documents", [])}
+
+    # Documents referencing this node (directly, or its file via MENTIONS_FILE)
+    file_target = f"file::{target.file_path}"
+    referenced_in = []
+    for e in data.get("doc_edges", []):
+        if e["target_id"] == node_id or e["target_id"] == file_target:
+            doc = docs_by_id.get(e["source_id"])
+            if not doc:
+                continue
+            referenced_in.append({
+                "document": doc["title"],
+                "doc_path": doc["file_path"],
+                "doc_type": doc["doc_type"],
+                "section": e.get("section"),
+                "line": e.get("line"),
+                "direct": e["target_id"] == node_id,
+                "provenance": e.get("provenance", {}),
+            })
+    # Direct references first, then by confidence
+    referenced_in.sort(
+        key=lambda r: (r["direct"], r["provenance"].get("confidence", 0)), reverse=True
+    )
+
+    rationale = [
+        r for r in data.get("rationale_notes", [])
+        if r.get("attached_node_id") == node_id
+        or (r["file_path"] == target.file_path and not r.get("attached_node_id")
+            and target.kind == "file")
+    ]
+
+    # Provenance-tagged call edges touching this node
+    edges = []
+    for e in payload.function_edges:
+        if node_id in (e.source_id, e.target_id) and (e.relationship == "INVOKES" or e.type == "CALLS"):
+            other_id = e.target_id if e.source_id == node_id else e.source_id
+            other = func_by_id.get(other_id)
+            edges.append({
+                "direction": "out" if e.source_id == node_id else "in",
+                "other": other.name if other else other_id,
+                "type": e.type,
+                "provenance": knowledge_mod.edge_provenance(e.adapter_metadata).model_dump(),
+            })
+    for e in payload.semantic_edges:
+        if node_id in (e.source_id, e.target_id):
+            other_id = e.target_id if e.source_id == node_id else e.source_id
+            other = func_by_id.get(other_id)
+            edges.append({
+                "direction": "out" if e.source_id == node_id else "in",
+                "other": other.name if other else other_id,
+                "type": e.type,
+                "description": e.description,
+                "provenance": knowledge_mod.semantic_edge_provenance(
+                    e.inferred_by, e.confidence
+                ).model_dump(),
+            })
+
+    return {
+        "graph_id": graph_id,
+        "node_id": node_id,
+        "node_name": target.name,
+        "referenced_in": referenced_in[:20],
+        "rationale": rationale[:20],
+        "edges": edges[:40],
+    }
+
+
+@api.get("/graph_analytics/{graph_id}")
+def get_graph_analytics(graph_id: str, refresh: bool = False):
+    """Centrality metrics, god nodes, cycles, bridges, dead code, and
+    surprising cross-module couplings. Cached at ingest; refresh=true recomputes.
+    """
+    if not refresh:
+        data = storage.load_meta(graph_id, "analytics")
+        if data is not None:
+            return data
+    payload = _require_payload(graph_id)
+    data = graph_analytics.compute_analytics(payload)
+    storage.store_meta(graph_id, "analytics", data)
+    return data
+
+
+@api.get("/architecture_report/{graph_id}")
+def get_architecture_report(graph_id: str, format: str = "markdown"):
+    """Generate the repository architecture report (GRAPH_REPORT.md).
+
+    format=markdown → downloadable Markdown; format=json → {"markdown": ...}.
+    """
+    from fastapi.responses import PlainTextResponse
+
+    payload = _require_payload(graph_id)
+    md = report_mod.build_report(graph_id, payload)
+    if format == "json":
+        return {"graph_id": graph_id, "markdown": md}
+    return PlainTextResponse(
+        content=md,
+        media_type="text/markdown",
+        headers={"Content-Disposition": f'attachment; filename="GRAPH_REPORT-{graph_id}.md"'},
+    )
+
+
+# ---------------------------------------------------------------------------
 # MCP helper endpoints
 # ---------------------------------------------------------------------------
 
-@app.get("/mcp/graphs")
+@api.get("/mcp/graphs")
 def mcp_list_graphs():
     """MCP: List every ingested repository with summary metadata.
 
@@ -989,7 +1468,11 @@ def mcp_list_graphs():
     graph without loading the full payload.
     """
     result = []
-    for graph_id in storage.list_graphs():
+    # Always filter in server mode, even to an empty-string session (no
+    # X-Flowify-Session header) — that matches nothing rather than falling
+    # through to "no filter, show every visitor's graphs".
+    scope_owner = _session_ctx.get() if IS_SERVER_MODE else None
+    for graph_id in storage.list_graphs(owner=scope_owner):
         payload = storage.load_light(graph_id)
         if not payload:
             continue
@@ -1006,7 +1489,7 @@ def mcp_list_graphs():
     return {"graphs": result, "count": len(result)}
 
 
-@app.get("/mcp/impact")
+@api.get("/mcp/impact")
 def mcp_impact_by_name(graph_id: str, function_name: str):
     """MCP: Change-impact analysis addressed by *function name* rather than node_id.
 
@@ -1014,9 +1497,7 @@ def mcp_impact_by_name(graph_id: str, function_name: str):
     exact match wins; falls back to case-insensitive prefix match) and
     then delegates to the standard impact analysis logic.
     """
-    payload = storage.load_light(graph_id)
-    if payload is None:
-        raise HTTPException(404, "graph not found")
+    payload = _require_payload(graph_id)
 
     # Exact match first, then case-insensitive
     node_id: str | None = None
@@ -1045,3 +1526,210 @@ def mcp_impact_by_name(graph_id: str, function_name: str):
 
     # Delegate to existing impact endpoint (direct call — same process)
     return get_impact(graph_id=graph_id, node_id=node_id)
+
+
+@api.get("/mcp/find_node")
+def mcp_find_node(graph_id: str, name: str, limit: int = 10):
+    """MCP: Find code nodes by (partial) name. Returns matches with summaries."""
+    payload = _require_payload(graph_id)
+    lname = name.lower()
+    exact, prefix, sub = [], [], []
+    for n in payload.function_nodes:
+        if n.kind in ("external",) or n.kind == "file":
+            continue
+        nl = n.name.lower()
+        entry = {
+            "id": n.id, "name": n.name, "file_path": n.file_path,
+            "type": n.type, "summary": (n.summary or "")[:160],
+            "lineno": n.lineno,
+        }
+        if nl == lname:
+            exact.append(entry)
+        elif nl.startswith(lname):
+            prefix.append(entry)
+        elif lname in nl:
+            sub.append(entry)
+    matches = (exact + prefix + sub)[:limit]
+    return {"graph_id": graph_id, "query": name, "matches": matches, "count": len(matches)}
+
+
+@api.get("/mcp/neighbors")
+def mcp_neighbors(graph_id: str, node_id: str):
+    """MCP: Direct callers and callees of a node (1-hop neighborhood)."""
+    impact = get_impact(graph_id=graph_id, node_id=node_id)
+    return {
+        "graph_id": graph_id,
+        "node_id": node_id,
+        "node_name": impact.node_name,
+        "callers": impact.callers,
+        "callees": impact.callees,
+    }
+
+
+@api.get("/mcp/shortest_path")
+def mcp_shortest_path(graph_id: str, source: str, target: str):
+    """MCP: Shortest call path between two functions, addressed by name."""
+    payload = _require_payload(graph_id)
+    path = graph_analytics.shortest_path(payload, source, target)
+    if path is None:
+        return {"graph_id": graph_id, "source": source, "target": target,
+                "found": False, "path": []}
+    return {"graph_id": graph_id, "source": source, "target": target,
+            "found": True, "path": path, "hops": len(path) - 1}
+
+
+@api.get("/mcp/search_rationale")
+def mcp_search_rationale(graph_id: str, query: str = "", marker: str = "", limit: int = 20):
+    """MCP: Search extracted developer rationale (TODO/FIXME/HACK/WHY/NOTE).
+
+    Filter by free-text `query` and/or `marker` (e.g. HACK). Empty filters
+    return the most recent notes.
+    """
+    payload = _require_payload(graph_id)
+    data = _get_or_build_knowledge(graph_id, payload=payload)
+    notes = data.get("rationale_notes", [])
+    if marker:
+        notes = [r for r in notes if r["marker"] == marker.upper()]
+    if query:
+        q = query.lower()
+        notes = [r for r in notes if q in r["text"].lower() or q in r["file_path"].lower()]
+    return {"graph_id": graph_id, "count": len(notes), "notes": notes[:limit]}
+
+
+@api.get("/mcp/dead_code")
+def mcp_dead_code(graph_id: str):
+    """MCP: Functions never invoked anywhere in the graph (candidates only —
+    dynamic dispatch and framework hooks can produce false positives)."""
+    analytics = get_graph_analytics(graph_id)
+    return {"graph_id": graph_id, "dead_code": analytics.get("dead_code", [])}
+
+
+@api.get("/mcp/hotspots")
+def mcp_hotspots(graph_id: str):
+    """MCP: God nodes, critical bridges, and high-risk components."""
+    analytics = get_graph_analytics(graph_id)
+    return {
+        "graph_id": graph_id,
+        "god_nodes": analytics.get("god_nodes", []),
+        "bridges": analytics.get("bridges", []),
+        "high_risk": analytics.get("high_risk", []),
+    }
+
+
+@api.get("/mcp/cycles")
+def mcp_cycles(graph_id: str):
+    """MCP: Circular dependencies in the call graph."""
+    analytics = get_graph_analytics(graph_id)
+    return {"graph_id": graph_id, "cycles": analytics.get("cycles", []),
+            "surprising_couplings": analytics.get("surprising_couplings", [])}
+
+
+@api.get("/mcp/architectural_summary")
+def mcp_architectural_summary(graph_id: str):
+    """MCP: The full architecture report as Markdown, for agent consumption."""
+    payload = _require_payload(graph_id)
+    return {"graph_id": graph_id, "markdown": report_mod.build_report(graph_id, payload)}
+
+
+# ---------------------------------------------------------------------------
+# Server-mode hardening: rate limiting + TTL janitor
+# ---------------------------------------------------------------------------
+
+_RATE_LIMITED_PREFIXES = ("/ingest_repo", "/mcp/ingest", "/bob/graph", "/query", "/mcp/query")
+_RATE_LIMIT_WINDOW_S = 60.0
+_RATE_LIMIT_MAX = int(os.environ.get("FLOWIFY_RATE_LIMIT_PER_MIN", "6"))
+_rate_buckets: dict[str, list[float]] = {}
+_rate_lock = None  # set lazily; threading is stdlib but avoid the import cost when unused
+
+
+def _client_ip(request: Request) -> str:
+    fwd = request.headers.get("x-forwarded-for")
+    if fwd:
+        return fwd.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+@app.middleware("http")
+async def _rate_limit_middleware(request: Request, call_next):
+    """A per-IP, per-minute cap on the endpoints that actually cost money or
+    CPU (ingest, query). Deliberately not applied to read-only GETs. Only
+    active in server mode — local/desktop use has one user and no budget
+    to protect."""
+    if not IS_SERVER_MODE or request.method != "POST" or not any(
+        request.url.path.rstrip("/").endswith(p) for p in _RATE_LIMITED_PREFIXES
+    ):
+        return await call_next(request)
+
+    import threading
+    import time as _time
+
+    global _rate_lock
+    if _rate_lock is None:
+        _rate_lock = threading.Lock()
+
+    ip = _client_ip(request)
+    now = _time.time()
+    with _rate_lock:
+        bucket = [t for t in _rate_buckets.get(ip, []) if now - t < _RATE_LIMIT_WINDOW_S]
+        if len(bucket) >= _RATE_LIMIT_MAX:
+            from fastapi.responses import JSONResponse
+            return JSONResponse(
+                status_code=429,
+                content={"detail": f"Rate limit: max {_RATE_LIMIT_MAX} requests/min to this endpoint"},
+            )
+        bucket.append(now)
+        _rate_buckets[ip] = bucket
+
+    return await call_next(request)
+
+
+def _start_graph_janitor() -> None:
+    """Server-mode only: delete graphs older than FLOWIFY_GRAPH_TTL_H so an
+    ephemeral hosted instance (no persistent storage) doesn't accumulate
+    other people's ingested code indefinitely between restarts."""
+    ttl_h = float(os.environ.get("FLOWIFY_GRAPH_TTL_H", "24"))
+    if not IS_SERVER_MODE or ttl_h <= 0:
+        return
+
+    import threading
+    import time as _time
+
+    def _loop() -> None:
+        while True:
+            _time.sleep(min(3600.0, ttl_h * 3600 / 4))
+            try:
+                cutoff = _time.time() - ttl_h * 3600
+                deleted = storage.delete_older_than(cutoff)
+                if deleted:
+                    logger.info(f"[janitor] deleted {len(deleted)} graph(s) older than {ttl_h}h")
+            except Exception as e:
+                logger.error(f"[janitor] failed: {e}")
+
+    threading.Thread(target=_loop, daemon=True).start()
+
+
+_start_graph_janitor()
+
+
+# ---------------------------------------------------------------------------
+# Router mounting + static frontend
+# ---------------------------------------------------------------------------
+# /api/*  — the path the production frontend and any reverse proxy use.
+# /*      — the same routes with no prefix, for backward compatibility with
+#           the MCP server and tests that call e.g. /mcp/ingest directly.
+# Both must be registered before the StaticFiles mount below, or the '/'
+# catch-all would shadow them.
+app.include_router(api, prefix="/api")
+app.include_router(api, include_in_schema=False)
+
+_frontend_dist = os.environ.get("FLOWIFY_FRONTEND_DIST", "").strip()
+if _frontend_dist and _Path(_frontend_dist).is_dir():
+    app.mount("/", StaticFiles(directory=_frontend_dist, html=True), name="ui")
+else:
+    # Dev mode (`npm run dev` serves the frontend separately) or no build
+    # was baked into the image — keep '/' answering with a small JSON status
+    # blob rather than a bare 404, same shape /api/status returns.
+    @app.get("/", include_in_schema=False)
+    def _root_fallback():
+        scope_owner = _session_ctx.get() if IS_SERVER_MODE else None
+        return {"service": "flowify", "mode": FLOWIFY_MODE, "graphs": storage.list_graphs(owner=scope_owner)}
