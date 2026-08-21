@@ -28,14 +28,21 @@ def detect_language(file_path: Path) -> str | None:
     return None
 
 
-def iter_source_files(repo_path: str) -> Iterator[Path]:
+def iter_repo_files(repo_path: str, extensions: set[str]) -> Iterator[Path]:
+    """Walk *repo_path*, skipping IGNORED_DIRS and dotdirs, yielding files whose
+    suffix (case-insensitive) is in *extensions*. Shared by any caller that
+    needs a filtered repo walk (source files, documentation files, ...)."""
     root = Path(repo_path).resolve()
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = [d for d in dirnames if d not in IGNORED_DIRS and not d.startswith(".")]
         for fn in filenames:
             p = Path(dirpath) / fn
-            if detect_language(p):
+            if p.suffix.lower() in extensions:
                 yield p
+
+
+def iter_source_files(repo_path: str) -> Iterator[Path]:
+    return iter_repo_files(repo_path, SUPPORTED_EXTENSIONS)
 
 
 def list_source_files(repo_path: str) -> List[Path]:

@@ -13,8 +13,8 @@ const SEMANTIC_ICONS = {
   CONSUMES_EVENT: "📥", CALLS: "⚙️",
 };
 
-const CloseIcon = () => (
-  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+export const CloseIcon = ({ size = 13 }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
     <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
   </svg>
 );
@@ -32,9 +32,40 @@ function CallerRow({ node }) {
   );
 }
 
+const MARKER_COLORS = {
+  HACK: "text-orange-300", FIXME: "text-rose-300", BUG: "text-rose-300",
+  WHY: "text-sky-300", TODO: "text-amber-300", NOTE: "text-slate-300",
+  WARNING: "text-orange-300", XXX: "text-rose-300", OPTIMIZE: "text-emerald-300",
+};
+
+const SOURCE_LABELS = {
+  ast: "AST", static_analysis: "Static", regex: "Regex",
+  llm: "LLM", heuristic: "Heuristic", user: "User",
+};
+
+// Compact "97% · AST" trust badge derived from edge/document provenance
+function ProvenanceBadge({ provenance }) {
+  if (!provenance) return null;
+  const conf = Math.round((provenance.confidence ?? 1) * 100);
+  const solid = conf >= 85;
+  return (
+    <span
+      title={provenance.reasoning || provenance.evidence || ""}
+      className={`shrink-0 text-[9px] font-mono px-1.5 py-0.5 rounded border ${
+        solid
+          ? "text-emerald-400 border-emerald-800/50 bg-emerald-950/40"
+          : "text-amber-400 border-amber-800/50 bg-amber-950/40"
+      }`}
+    >
+      {conf}% · {SOURCE_LABELS[provenance.source] || provenance.source}
+    </span>
+  );
+}
+
 export default function ImpactPanel() {
   const impact        = useFlowStore((s) => s.impactData);
   const impactLoading = useFlowStore((s) => s.impactLoading);
+  const nodeRefs      = useFlowStore((s) => s.nodeRefs);
   const selectedId    = useFlowStore((s) => s.selectedId);
   const clearSelection = useFlowStore((s) => s.clearSelection);
 
@@ -120,6 +151,42 @@ export default function ImpactPanel() {
               {impact.affected_modules.slice(0, 4).map((mod) => (
                 <div key={mod} className="flex items-center gap-1.5 text-[11px] text-blue-300 py-0.5">
                   <span>📦</span><span className="truncate">{mod}</span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Documentation references (knowledge layer) */}
+          {nodeRefs?.referenced_in?.length > 0 && (
+            <div className="px-4 py-2.5 border-b border-[#1a2540]">
+              <div className="text-[9px] uppercase tracking-widest text-slate-600 font-semibold mb-1.5">
+                Referenced in docs
+              </div>
+              {nodeRefs.referenced_in.slice(0, 4).map((ref, i) => (
+                <div key={i} className="flex items-center gap-1.5 py-0.5 min-w-0">
+                  <span className="text-[11px]">📄</span>
+                  <span className="text-[11px] text-cyan-300 truncate" title={ref.doc_path}>
+                    {ref.document}
+                    {ref.section ? <span className="text-slate-500"> › {ref.section}</span> : null}
+                  </span>
+                  <ProvenanceBadge provenance={ref.provenance} />
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Developer rationale (TODO/FIXME/HACK/WHY comments in this node) */}
+          {nodeRefs?.rationale?.length > 0 && (
+            <div className="px-4 py-2.5 border-b border-[#1a2540]">
+              <div className="text-[9px] uppercase tracking-widest text-slate-600 font-semibold mb-1.5">
+                Developer rationale
+              </div>
+              {nodeRefs.rationale.slice(0, 3).map((r) => (
+                <div key={r.id} className="py-0.5">
+                  <span className={`text-[9px] font-bold mr-1.5 ${MARKER_COLORS[r.marker] || "text-slate-300"}`}>
+                    {r.marker}
+                  </span>
+                  <span className="text-[10px] text-slate-400">{r.text}</span>
                 </div>
               ))}
             </div>

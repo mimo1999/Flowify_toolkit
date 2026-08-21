@@ -1,12 +1,13 @@
 """End-to-end ingestion pipeline (called from API endpoints)."""
 from __future__ import annotations
+import os
 import re
 from pathlib import Path
 from typing import Dict, List
 
 import networkx as nx
 
-from . import llm_provider as bob_client, storage, graph_builder, module_abstractor, git_updater, llm_ingestion, learning
+from . import llm_provider as bob_client, storage, graph_builder, module_abstractor, git_updater, llm_ingestion, learning, knowledge, graph_analytics
 from .models import (
     GraphPayload, FunctionNode, RepositoryContext, SemanticMetadata, SemanticEdge,
     FlowSummary, FlowStep, ModuleNode, ModuleEdge,
@@ -37,94 +38,127 @@ def _is_stub(s: str | None, node: "FunctionNode | None" = None) -> bool:
         return node.adapter_metadata.get("summary_source") == "heuristic"
     return False
 
-def _summarize_functions(nodes: list[FunctionNode]) -> None:
-    """Generate 1-line descriptions for callable nodes that lack a real summary."""
-    provider = bob_client.get_provider()
-    is_real_llm = not getattr(provider, "_is_heuristic", False)
-    for n in nodes:
-        if not _is_callable(n) or not n.code_snippet:
-            continue
-        if not _is_stub(n.summary, n):
-            continue
-        n.summary = provider.summarize_function(
-            n.name,
-            n.code_snippet,
-            kind=n.kind or n.type or "function",
-        )
-        # Tag the source so future calls can detect heuristic-generated summaries
-        n.adapter_metadata["summary_source"] = "llm" if is_real_llm else "heuristic"
+# How many functions to pack into a single batched LLM call.  Larger = fewer
+# calls (cheaper) but bigger prompts/responses; ~10 keeps each call well within
+# the model's context while cutting call count ~10x.
+_LLM_BATCH_SIZE = int(os.environ.get("FLOWIFY_LLM_BATCH", "10"))
 
 
-def _analyze_semantics(
+def _is_trivial(n: FunctionNode) -> bool:
+    """True if a function is small/simple enough that the free heuristic suffices.
+
+    Tiny accessors, dunders (other than __init__), and short wrappers don't
+    warrant a cloud call — name+code heuristics describe them just as well, and
+    they're the bulk of most codebases.
+    """
+    code = n.code_snippet or ""
+    name = n.name or ""
+    if name.startswith("__") and name.endswith("__") and name != "__init__":
+        return True
+    body = [ln for ln in code.splitlines() if ln.strip()]
+    return len(body) <= 6 or len(code) < 160
+
+
+def _enrich_functions(
     nodes: list[FunctionNode],
     g: nx.DiGraph,
-    repo_context: RepositoryContext
+    repo_context: RepositoryContext,
 ) -> list[SemanticEdge]:
-    """Phase 2: Perform semantic analysis on function nodes.
-    
-    Returns list of semantic edges discovered during analysis.
+    """Phase 2 (combined): summary + semantics + semantic edges in ONE pass.
+
+    Replaces the old two-pass design that made two LLM calls per function
+    (summarize, then analyze).  Trivial functions are handled by free
+    heuristics; the rest are batched ``_LLM_BATCH_SIZE`` per cloud call, and
+    each call returns both the summary and the semantic analysis.  Net effect:
+    cloud calls drop from ~2N to ~(non-trivial N / batch size).
+
+    Returns the list of semantic edges discovered during analysis.
     """
-    print(f"[Phase 2] Performing semantic analysis on {len(nodes)} functions...")
-    semantic_edges = []
-    analyzed_count = 0
-    callable_count = sum(1 for n in nodes if _is_callable(n))
-    
-    for n in nodes:
-        if not _is_callable(n) or not n.code_snippet:
-            continue
-        
-        # Get neighbors for context
-        neighbors = []
+    provider = bob_client.get_provider()
+    is_real_llm = not getattr(provider, "_is_heuristic", False)
+    heur = bob_client.heuristic_provider()
+    ctx = repo_context.model_dump()
+    name_to_id = {n.name: n.id for n in nodes}
+    semantic_edges: list[SemanticEdge] = []
+
+    callables = [n for n in nodes if _is_callable(n) and n.code_snippet]
+    print(f"[Phase 2] Enriching {len(callables)} functions via "
+          f"{'batched LLM' if is_real_llm else 'heuristics'}...")
+
+    def neighbors_of(n: FunctionNode) -> list[str]:
         if n.id in g.nodes:
-            neighbors = [g.nodes[nid].get("name", "") for nid in g.successors(n.id)][:5]
-        
-        # Perform semantic analysis
-        semantics_dict = bob_client.analyze_function_semantics(
-            n.name,
-            n.code_snippet,
-            repo_context.model_dump(),
-            neighbors
-        )
-        
-        # Extract semantic edges before creating metadata
-        semantic_edge_dicts = semantics_dict.pop("semantic_edges", [])
+            return [g.nodes[nid].get("name", "") for nid in g.successors(n.id)][:5]
+        return []
 
-        # Create semantic metadata. Bob may return values outside our Literals
-        # (e.g. an unknown intent label); fall back to defaults rather than crash.
+    def apply(n: FunctionNode, r: dict, source: str) -> None:
+        summary = (r.get("summary") or "").strip()
+        # Only overwrite a stub summary, so a real LLM summary is never clobbered
+        # by a later heuristic pass.
+        if summary and _is_stub(n.summary, n):
+            n.summary = summary
+            n.adapter_metadata["summary_source"] = source
         try:
-            n.semantics = SemanticMetadata(**semantics_dict)
+            n.semantics = SemanticMetadata(
+                intent=r.get("intent"),
+                complexity=r.get("complexity"),
+                criticality=r.get("criticality"),
+                patterns=r.get("patterns", []),
+                side_effects=r.get("side_effects", []),
+                confidence=r.get("confidence", 0.5),
+            )
         except Exception:
-            n.semantics = SemanticMetadata(confidence=semantics_dict.get("confidence", 0.0))
-
-        # Create semantic edges
-        for edge_dict in semantic_edge_dicts:
-            target_name = edge_dict.get("target_name", "")
-            target_id = None
-            for node in nodes:
-                if node.name == target_name:
-                    target_id = node.id
-                    break
-
-            if not target_id:
+            n.semantics = SemanticMetadata(confidence=r.get("confidence", 0.0))
+        conf = r.get("confidence", 0.5)
+        for ed in r.get("semantic_edges", []) or []:
+            tgt = name_to_id.get(ed.get("target_name", ""))
+            if not tgt or tgt == n.id:
                 continue
             try:
                 semantic_edges.append(SemanticEdge(
-                    type=edge_dict.get("type", "DEPENDS_ON"),
+                    type=ed.get("type", "DEPENDS_ON"),
                     source_id=n.id,
-                    target_id=target_id,
-                    description=edge_dict.get("description"),
-                    confidence=semantics_dict.get("confidence", 0.5),
-                    inferred_by="bob" if semantics_dict.get("confidence", 0) > 0.5 else "heuristic"
+                    target_id=tgt,
+                    description=ed.get("description"),
+                    confidence=conf,
+                    inferred_by="bob" if conf > 0.5 else "heuristic",
                 ))
             except Exception:
-                # Skip edges with invalid type / fields rather than abort ingest.
                 continue
-        
-        analyzed_count += 1
-        if analyzed_count % 10 == 0:
-            print(f"  - Analyzed {analyzed_count}/{callable_count} functions")
-    
-    print(f"  - Semantic analysis complete: {analyzed_count} functions, {len(semantic_edges)} semantic edges")
+
+    batch: list[dict] = []
+    batch_nodes: list[FunctionNode] = []
+
+    def flush() -> None:
+        if not batch:
+            return
+        results = provider.analyze_functions_batch(batch, ctx)
+        for bn, r in zip(batch_nodes, results):
+            apply(bn, r, "llm")
+        batch.clear()
+        batch_nodes.clear()
+
+    done = 0
+    for n in callables:
+        item = {
+            "name": n.name,
+            "code": n.code_snippet,
+            "kind": n.kind or n.type or "function",
+            "neighbors": neighbors_of(n),
+        }
+        if not is_real_llm or _is_trivial(n):
+            apply(n, heur.analyze_functions_batch([item], ctx)[0], "heuristic")
+        else:
+            batch.append(item)
+            batch_nodes.append(n)
+            if len(batch) >= _LLM_BATCH_SIZE:
+                flush()
+        done += 1
+        if done % 50 == 0:
+            print(f"  - Enriched {done}/{len(callables)} functions")
+    flush()
+
+    print(f"  - Enrichment complete: {len(callables)} functions, "
+          f"{len(semantic_edges)} semantic edges")
     return semantic_edges
 
 
@@ -382,10 +416,9 @@ def ingest(repo_path: str) -> GraphPayload:
     
     # Build function graph with context awareness
     g, function_nodes, function_edges = graph_builder.build_function_graph(repo_path)
-    _summarize_functions(function_nodes)
-    
-    # Phase 2: Semantic analysis
-    semantic_edges = _analyze_semantics(function_nodes, g, repo_context)
+
+    # Phase 2: combined summary + semantic analysis (batched, one pass)
+    semantic_edges = _enrich_functions(function_nodes, g, repo_context)
     
     # Push summaries and semantics back into the networkx graph
     for n in function_nodes:
@@ -451,7 +484,29 @@ def ingest(repo_path: str) -> GraphPayload:
     except Exception as e:
         print(f"  - flow summary generation failed ({e}); skipping")
 
+    _build_knowledge_layer(graph_id, repo_path, payload)
+
     return payload
+
+
+def _build_knowledge_layer(graph_id: str, repo_path: str, payload: GraphPayload) -> None:
+    """Deterministic doc/rationale index + graph analytics; never fails ingestion."""
+    try:
+        kidx = knowledge.build_knowledge(repo_path, payload.function_nodes)
+        kidx.graph_id = graph_id
+        storage.store_meta(graph_id, "knowledge", kidx.model_dump())
+        print(f"[Knowledge] {len(kidx.documents)} documents, "
+              f"{len(kidx.doc_edges)} doc edges, "
+              f"{len(kidx.rationale_notes)} rationale notes")
+    except Exception as e:
+        print(f"  - knowledge layer failed ({e}); skipping")
+    try:
+        analytics = graph_analytics.compute_analytics(payload)
+        storage.store_meta(graph_id, "analytics", analytics)
+        print(f"[Analytics] {analytics['stats']['cycle_count']} cycles, "
+              f"{len(analytics['god_nodes'])} god nodes ranked")
+    except Exception as e:
+        print(f"  - graph analytics failed ({e}); skipping")
 
 
 def update(graph_id: str) -> GraphPayload | None:
@@ -501,7 +556,6 @@ def update(graph_id: str) -> GraphPayload | None:
             resolved_new.append(e)
 
     merged_edges = keep_edges + resolved_new
-    _summarize_functions([n for n in new_nodes if _is_callable(n)])
 
     # Build graph for semantic analysis
     g = nx.DiGraph()
@@ -510,22 +564,19 @@ def update(graph_id: str) -> GraphPayload | None:
     for e in merged_edges:
         if g.has_node(e.source_id) and g.has_node(e.target_id):
             g.add_edge(e.source_id, e.target_id, type=e.type, relationship=e.relationship)
-    
-    # Phase 2: Semantic analysis on new/changed nodes
+
+    # Phase 2: combined summary + semantic analysis on new/changed nodes only
     repo_context_dict = storage.load_meta(graph_id, "repo_context") or {}
     try:
         repo_context = RepositoryContext(**repo_context_dict) if repo_context_dict else RepositoryContext(fallback_used=True)
     except Exception:
         repo_context = RepositoryContext(fallback_used=True)
-    if repo_context_dict:
-        new_semantic_edges = _analyze_semantics(new_nodes, g, repo_context)
-        keep_semantic_edges = [
-            e for e in payload.semantic_edges
-            if e.source_id in kept_ids and e.target_id in kept_ids
-        ]
-        merged_semantic_edges = keep_semantic_edges + new_semantic_edges
-    else:
-        merged_semantic_edges = []
+    new_semantic_edges = _enrich_functions(new_nodes, g, repo_context)
+    keep_semantic_edges = [
+        e for e in payload.semantic_edges
+        if e.source_id in kept_ids and e.target_id in kept_ids
+    ]
+    merged_semantic_edges = keep_semantic_edges + new_semantic_edges
     
     # Push semantics to graph
     for n in merged_nodes:
@@ -568,4 +619,7 @@ def update(graph_id: str) -> GraphPayload | None:
     storage.store_meta(graph_id, "llm_ingestion_prompt", {"prompt": llm_prompt, "version": llm_result.prompt_version})
     if new_head:
         storage.store_meta(graph_id, "git", {"head": new_head})
+
+    # Refresh docs/rationale/analytics — changed files may add or remove them.
+    _build_knowledge_layer(graph_id, payload.repo_path, payload)
     return payload

@@ -56,8 +56,18 @@ def _cluster(fg: nx.DiGraph) -> List[List[str]]:
                 clusters.append(list(c))
         except Exception:
             clusters.append(list(comp))
-    # Singletons orphaned from the call graph: bucket by directory.
-    return clusters
+
+    # Modularity optimizes for call-graph coupling, not directory structure —
+    # a directory whose functions rarely call each other (test suites are the
+    # extreme case: each test mostly calls the code under test, not other
+    # tests) gets fragmented into many small, identically-named clusters.
+    # Merge same-directory clusters back into one so the top-level module
+    # view shows one node per directory instead of a dozen indistinguishable
+    # duplicates all labeled e.g. "tests".
+    merged: Dict[str, List[str]] = defaultdict(list)
+    for cluster in clusters:
+        merged[_name_hint(cluster, fg)].extend(cluster)
+    return list(merged.values())
 
 
 def _name_hint(node_ids: List[str], g: nx.DiGraph) -> str:
@@ -397,6 +407,7 @@ def _emit_symbol_children(
             "kind": f.get("type", "function"),
             "parent": parent_id, "description": f.get("summary", "") or "",
             "file_path": f.get("file_path"),
+            "adapter_metadata": f.get("adapter_metadata") or {},
         })
         edges.append({
             "id": f"contains:{parent_id}->{fid}",
@@ -413,6 +424,16 @@ def _emit_symbol_children(
             })
 
     return children, edges
+
+
+def _rank_and_cap(scored: Dict[str, int], cap: int) -> List[str]:
+    """Rank keys by score descending (ties broken alphabetically) and truncate.
+
+    Shared by both expand_file_node branches so "which children survive
+    truncation" is one ranking rule, not a per-action special case — only the
+    score function and cap differ (call-degree + symbols, vs edge-count + files).
+    """
+    return sorted(scored, key=lambda k: (-scored[k], k))[:cap]
 
 
 def expand_file_node(
@@ -432,11 +453,22 @@ def expand_file_node(
 
     # Cap: never return more than this many children to keep the canvas readable.
     _MAX_CHILDREN = 12
+    # Drilling into a file is deliberate, so it tolerates a bigger canvas; large
+    # files still get truncated, dropping the least-connected symbols first.
+    _MAX_SYMBOL_CHILDREN = 40
 
     if action == "functions":
         fids = [fid for fid, f in function_nodes_by_id.items() if f.get("file_path") == file_path]
-        children, edges = _emit_symbol_children(node_id, fids, function_nodes_by_id, function_edges)
-        return {"parent_id": node_id, "children": children[:_MAX_CHILDREN], "edges": edges}
+        degree: Dict[str, int] = defaultdict(int)
+        for e in function_edges:
+            if _is_invocation(e):
+                degree[e["source_id"]] += 1
+                degree[e["target_id"]] += 1
+        ranked_fids = _rank_and_cap({fid: degree.get(fid, 0) for fid in fids}, _MAX_SYMBOL_CHILDREN)
+        children, edges = _emit_symbol_children(
+            node_id, ranked_fids, function_nodes_by_id, function_edges,
+        )
+        return {"parent_id": node_id, "children": children, "edges": edges}
 
     # action == "callees": show files this file calls (file-level CALLS aggregation).
     func_to_file = {fid: f.get("file_path", "") for fid, f in function_nodes_by_id.items()}
@@ -454,7 +486,7 @@ def expand_file_node(
         if sf == file_path and tf and tf != file_path:
             callee_files[tf] += 1
 
-    for tf, _ in sorted(callee_files.items(), key=lambda kv: (-kv[1], kv[0]))[:_MAX_CHILDREN]:
+    for tf in _rank_and_cap(callee_files, _MAX_CHILDREN):
         tid = f"file::{tf}"
         children.append({
             "id": tid, "label": tf.split("/")[-1], "kind": "file",
@@ -564,6 +596,7 @@ def expand_node(
                 "kind": tgt.get("type", "function"),
                 "parent": node_id, "description": tgt.get("summary", "") or "",
                 "file_path": tgt.get("file_path"),
+                "adapter_metadata": tgt.get("adapter_metadata") or {},
             })
             edges.append({
                 "id": f"calls:{node_id}->{e['target_id']}",
@@ -679,6 +712,7 @@ def collapse_for_depth(
                 "kind": f.get("type", "function"),
                 "parent": m.id, "description": f.get("summary", "") or "",
                 "file_path": f.get("file_path"),
+                "adapter_metadata": f.get("adapter_metadata") or {},
             })
             edges_out.append({
                 "id": f"contains:{m.id}->{fid}",
