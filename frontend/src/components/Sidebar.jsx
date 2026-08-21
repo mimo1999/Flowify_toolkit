@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { useFlowStore } from "../store.js";
+import { useFlowStore, API, apiFetch } from "../store.js";
 
 // ── Icons (export) ────────────────────────────────────────────────────────────
 const DownloadIcon = () => (
@@ -32,12 +32,85 @@ const ResetIcon = () => (
     <path d="M3.51 15a9 9 0 1 0 .49-3.93"/>
   </svg>
 );
+const PowerIcon = () => (
+  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+    <path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/>
+  </svg>
+);
+const InsightsIcon = () => (
+  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+    <line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/>
+    <line x1="6" y1="20" x2="6" y2="14"/>
+  </svg>
+);
+const SummaryIcon = () => (
+  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+    <polyline points="14,2 14,8 20,8"/><line x1="8" y1="13" x2="16" y2="13"/>
+    <line x1="8" y1="17" x2="16" y2="17"/><line x1="8" y1="9" x2="11" y2="9"/>
+  </svg>
+);
+
+// ── Shutdown button (two-step confirm) ────────────────────────────────────────
+function ShutdownButton() {
+  const shutdownServers = useFlowStore((s) => s.shutdownServers);
+  const [confirming, setConfirming] = useState(false);
+
+  useEffect(() => {
+    if (!confirming) return;
+    const t = setTimeout(() => setConfirming(false), 3000);
+    return () => clearTimeout(t);
+  }, [confirming]);
+
+  return (
+    <button
+      onClick={() => (confirming ? shutdownServers() : setConfirming(true))}
+      title="Stop the backend and frontend dev servers"
+      className={`w-full flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium border transition-colors ${
+        confirming
+          ? "border-rose-600 bg-rose-600 text-white hover:bg-rose-500"
+          : "border-rose-900/60 bg-rose-950/30 text-rose-400 hover:text-rose-300 hover:border-rose-700"
+      }`}
+    >
+      <PowerIcon />
+      {confirming ? "Click again to confirm" : "Shut down servers"}
+    </button>
+  );
+}
+
+// ── Full-screen overlay shown once servers are stopped ────────────────────────
+function StoppedOverlay() {
+  return (
+    <div className="fixed inset-0 z-50 flex flex-col items-center justify-center gap-3 bg-[#070b14]/95 backdrop-blur-sm text-center px-6">
+      <div className="w-12 h-12 rounded-full border border-rose-800/60 bg-rose-950/40 flex items-center justify-center text-rose-400">
+        <PowerIcon />
+      </div>
+      <div className="text-slate-200 text-sm font-medium">Servers stopped</div>
+      <div className="text-slate-500 text-xs max-w-xs">
+        The backend and frontend dev servers have been shut down. You can close
+        this tab. Restart with <code className="text-slate-400">bash run.sh</code>.
+      </div>
+    </div>
+  );
+}
+
+// ── Deployment config (server vs local mode) ──────────────────────────────────
+// Drives two things: hiding the shutdown button (an unauthenticated
+// process-kill switch — fine on a single-user local instance, not fine on a
+// shared public one) and the repo-path input's placeholder/hint text.
+function useServerConfig() {
+  const [config, setConfig] = useState(null);
+  useEffect(() => {
+    apiFetch(`${API}/config`).then(r => r.json()).then(setConfig).catch(() => {});
+  }, []);
+  return config;
+}
 
 // ── Provider badge ────────────────────────────────────────────────────────────
 function ProviderBadge() {
   const [info, setInfo] = useState(null);
   useEffect(() => {
-    fetch("/api/provider_info").then(r => r.json()).then(setInfo).catch(() => {});
+    apiFetch(`${API}/provider_info`).then(r => r.json()).then(setInfo).catch(() => {});
   }, []);
   if (!info) return null;
   return (
@@ -96,7 +169,7 @@ function DepthSelector({ graphId }) {
   return (
     <div>
       <div className="text-[10px] uppercase tracking-widest text-slate-500 font-semibold mb-2">
-        Drill-down view
+        Jump to a level
       </div>
       <div className="flex gap-1">
         <button
@@ -139,7 +212,10 @@ export default function Sidebar() {
     nodes, expanded, viewHistory,
     goBack, resetView,
     exportGraph, exportStatus,
+    serverStopped, openSummary, openInsights, downloadReport,
   } = useFlowStore();
+  const config = useServerConfig();
+  const serverMode = config?.server_mode ?? false;
 
   const fileCount     = Object.values(nodes).filter(n => n.kind === "file").length;
   const fnCount       = Object.values(nodes).filter(n => n.kind !== "file" && n.kind !== "module").length;
@@ -179,15 +255,21 @@ export default function Sidebar() {
         {/* Repository input */}
         <div>
           <label className="block text-[10px] uppercase tracking-widest text-slate-500 font-semibold mb-2">
-            Repository path
+            {serverMode ? "GitHub / GitLab URL" : "Repository path or git URL"}
           </label>
           <input
             className="w-full bg-[#0f1629] border border-[#1e2d4a] rounded-lg px-3 py-2 text-sm text-slate-200 placeholder:text-slate-600 focus:outline-none focus:border-blue-500 transition-colors"
-            placeholder="/absolute/path/to/repo"
+            placeholder={serverMode ? "https://github.com/owner/repo" : "/absolute/path/to/repo or https://github.com/owner/repo"}
             value={repoPath}
             onChange={(e) => setRepoPath(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && ingest()}
           />
+          {serverMode && (
+            <p className="mt-1.5 text-[10px] text-slate-500 leading-snug">
+              Public repos only. Cloned, graphed, then deleted from the server —
+              nothing is kept beyond the graph itself, which expires after 24h.
+            </p>
+          )}
         </div>
 
         {/* Action buttons */}
@@ -221,7 +303,7 @@ export default function Sidebar() {
             <button
               onClick={goBack}
               disabled={!canGoBack}
-              title="Go back"
+              title="Undo the last navigation action — expand, collapse, level switch, or search"
               className="flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg text-xs border border-[#1e2d4a] text-slate-400 hover:text-slate-200 hover:border-slate-500 disabled:opacity-25 disabled:cursor-not-allowed transition-colors"
             >
               <BackIcon /> Back
@@ -235,6 +317,28 @@ export default function Sidebar() {
               <ResetIcon /> Reset
             </button>
           </div>
+        )}
+
+        {/* Repository summary */}
+        {graphId && (
+          <button
+            onClick={openSummary}
+            title="View the generated repository summary"
+            className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-sm font-medium border border-blue-800/50 bg-blue-950/30 text-blue-300 hover:bg-blue-900/40 hover:border-blue-700 transition-colors"
+          >
+            <SummaryIcon /> Repository summary
+          </button>
+        )}
+
+        {/* Graph insights (analytics) */}
+        {graphId && (
+          <button
+            onClick={openInsights}
+            title="God nodes, cycles, dead code, and cross-module couplings"
+            className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-sm font-medium border border-purple-800/50 bg-purple-950/30 text-purple-300 hover:bg-purple-900/40 hover:border-purple-700 transition-colors"
+          >
+            <InsightsIcon /> Graph insights
+          </button>
         )}
 
         {/* Drill-down view selector */}
@@ -279,7 +383,28 @@ export default function Sidebar() {
                 <CopyIcon />
                 {exportStatus === "copied" ? "Copied!" : "Mermaid"}
               </button>
+              <button
+                onClick={downloadReport}
+                disabled={exportStatus === "downloading"}
+                title="Download the architecture report (GRAPH_REPORT.md)"
+                className="flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg text-xs border border-[#1e2d4a] text-slate-400 hover:text-slate-200 hover:border-slate-500 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+              >
+                <DownloadIcon /> Report
+              </button>
             </div>
+            <button
+              onClick={() => exportGraph("llm")}
+              disabled={exportStatus === "downloading"}
+              title="Copy the architecture report to your clipboard, ready to paste into ChatGPT/Claude/any LLM"
+              className={`mt-2 w-full flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg text-xs border transition-colors ${
+                exportStatus === "copied"
+                  ? "border-emerald-700 bg-emerald-950/40 text-emerald-400"
+                  : "border-[#1e2d4a] text-slate-400 hover:text-slate-200 hover:border-slate-500 disabled:opacity-30 disabled:cursor-not-allowed"
+              }`}
+            >
+              <CopyIcon />
+              {exportStatus === "copied" ? "Copied!" : "Copy for LLM (no API key needed)"}
+            </button>
           </div>
         )}
 
@@ -330,6 +455,16 @@ export default function Sidebar() {
           {error}
         </div>
       )}
+
+      {/* Footer — shut down servers (local mode only; the backend rejects
+          POST /shutdown with 404 in server mode, so hide the affordance too) */}
+      {!serverMode && (
+        <div className="px-4 py-3 border-t border-[#1a2540] shrink-0">
+          <ShutdownButton />
+        </div>
+      )}
+
+      {serverStopped && <StoppedOverlay />}
     </aside>
   );
 }

@@ -6,7 +6,11 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      "/api": { target: "http://localhost:8000", changeOrigin: true, rewrite: (p) => p.replace(/^\/api/, "") },
+      // The backend now serves routes under /api itself (see the APIRouter
+      // mount in backend/app/main.py), so this only needs to forward the
+      // request — no more stripping the /api prefix, which used to be the
+      // one thing that made `/api` a dev-only fiction (see HANDOFF.md).
+      "/api": { target: "http://localhost:8000", changeOrigin: true },
     },
   },
 });
