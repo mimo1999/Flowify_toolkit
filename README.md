@@ -122,6 +122,60 @@ All provider responses are cached to `_store/llm_cache/` keyed by SHA256 of the 
 | `OPENCLAW_API_KEY` | *(unset)* | OpenClaw API key |
 | `OPENCLAW_API_URL` | *(unset)* | OpenClaw endpoint |
 | `FLOWIFY_STORE` | `./_store` | Graph + cache storage directory |
+| `FLOWIFY_MODE` | `local` | `local` (desktop use) or `server` (hosted deploy) — see [Deployment](#deployment) |
+| `FLOWIFY_FRONTEND_DIST` | *(unset)* | Path to a built `frontend/dist`; if set, the backend serves it at `/` |
+| `FLOWIFY_ALLOWED_ROOTS` | *(unset)* | `server` mode only: `os.pathsep`-separated local paths ingest is allowed to read |
+| `FLOWIFY_WORKDIR` | system temp dir | Where git-URL clones are made before ingest, then deleted |
+| `FLOWIFY_MAX_CLONE_MB` | `100` | Reject a git-URL clone larger than this |
+| `FLOWIFY_CORS_ORIGINS` | `*` | Comma-separated allowed origins |
+| `FLOWIFY_GRAPH_TTL_H` | `24` | `server` mode only: delete graphs older than this many hours |
+| `FLOWIFY_RATE_LIMIT_PER_MIN` | `6` | `server` mode only: per-IP cap on ingest/query calls |
+
+---
+
+## Deployment
+
+The same codebase runs four ways — see [Dockerfile](Dockerfile) and
+[`.github/workflows/`](.github/workflows) for the full setup:
+
+- **Hosted (public site), genuinely free — [Render](https://render.com)** —
+  a single Docker image serves the built frontend and the API from one
+  origin (`FLOWIFY_MODE=server`). Paste a public git URL; it's cloned to a
+  temp dir, ingested, and deleted. No server-side LLM key — graphs are
+  built with the deterministic AST-based provider, and the **Copy for
+  LLM** export gives a full architecture report to paste into any chatbot
+  for free. Graphs are scoped to an anonymous per-browser session and
+  expire after `FLOWIFY_GRAPH_TTL_H` hours.
+
+  In the Render dashboard: **New +** → **Blueprint**, point it at this
+  repo — [`render.yaml`](render.yaml) configures the rest. No credit card
+  required on Render's free plan. (Hugging Face Spaces was the original
+  plan here, but as of July 2026 HF requires a PRO subscription to create
+  a Docker Space — the free tier is capped at 2 ZeroGPU Spaces, which
+  don't fit an always-on server. If you do have HF PRO,
+  `.github/workflows/deploy-space.yml` + [`deploy/space_readme.md`](deploy/space_readme.md)
+  still work.) Render's free tier sleeps after 15 min idle (~30-60s cold
+  start on the next request) and has no persistent disk — both already
+  accounted for by the TTL janitor and ephemeral-storage design.
+  ```bash
+  docker build -t flowify .
+  docker run -p 7860:7860 -e FLOWIFY_MODE=server flowify
+  ```
+- **Local, one command** — the same image, pointed at your own folder,
+  with `/shutdown` enabled and no session scoping:
+  ```bash
+  docker run -p 7860:7860 -e FLOWIFY_MODE=local -v "$PWD:/repos:ro" ghcr.io/mimo1999/flowify_toolkit
+  ```
+- **Local, from source** — unchanged: `bash run.sh` (see Quick start above).
+- **Frontend only, on Vercel** — connect this repo with Root Directory
+  `frontend`, then set `VITE_API_BASE=https://<your-render-service>.onrender.com/api`
+  so a statically-hosted frontend talks to a backend running elsewhere.
+
+`.github/workflows/ci.yml` runs the no-server-needed tests, a frontend
+build, and a Docker build on every push. `docker-publish.yml` pushes
+`ghcr.io/<owner>/<repo>` on version tags — free for public repos, no extra
+secret required. `deploy-render.yml` is only needed if you've turned off
+Render's default GitHub auto-deploy.
 
 ---
 
@@ -132,17 +186,18 @@ Flowify runs in three phases:
 ```
 repo_path
   → ingestion.py          (language detection, file walk)
+  → llm_provider.py       (analyze_repository, summarize_function, analyze_semantics)
   → graph_builder.py      (AST → CIR nodes/edges, multi-language)
-  → llm_provider.py       (summarize_function, analyze_semantics)
   → module_abstractor.py  (community detection → module nodes)
-  → storage.py            (_store/{graph_id}.json)
+  → storage.py            (SQLite at $FLOWIFY_STORE/flowify.db)
+  → llm_ingestion.py      (LLM validation/enrichment of AST-derived node JSON)
   → retrieval.py          (query → graph BFS traversal)
   → learning.py           (feedback loop, terminology map)
 ```
 
-**Phase 1 — Repo context** (`llm_ingestion.py`): analyses README, manifests, directory tree; detects project type, tech stack, entry points, architecture pattern.
+**Phase 1 — Repo context** (`llm_provider.py`'s `analyze_repository`): analyses README, manifests, directory tree; detects project type, tech stack, entry points, architecture pattern.
 
-**Phase 2 — Semantic enrichment** (`graph_builder.py` + `llm_provider.py`): multi-language AST parsing (Python, JS/TS, Java, C/C++) → Canonical Intermediate Representation (CIR) → per-function LLM summaries (intent, complexity, criticality). Module clustering via greedy modularity community detection (NetworkX).
+**Phase 2 — Semantic enrichment** (`graph_builder.py` + `llm_provider.py` + `llm_ingestion.py`): multi-language AST parsing (Python, JS/TS, Java, C/C++) → Canonical Intermediate Representation (CIR) → per-function LLM summaries (intent, complexity, criticality) → `llm_ingestion.py` validates/enriches the AST-derived node JSON. Module clustering via greedy modularity community detection (NetworkX).
 
 **Phase 3 — Continuous learning** (`learning.py`): tracks query patterns and feedback; adjusts relevance scores; builds a terminology map.
 
@@ -158,7 +213,7 @@ repo_path
 
 ### Graph storage
 
-- Graphs: `_store/{graph_id}.json` — `{graph_id}` is a 12-char hex from `uuid4().hex[:12]`
+- Graphs: stored in a SQLite database at `$FLOWIFY_STORE/flowify.db` — `{graph_id}` is a 12-char hex from `uuid4().hex[:12]`
 - MCP repo IDs: 12-char hex from SHA256 of `repo_path` — **different from graph IDs**
 - Override store location with `FLOWIFY_STORE` env var
 
@@ -166,11 +221,17 @@ repo_path
 
 ## API reference
 
+Every route below is available both at its path as written (kept for
+backward compatibility with the MCP server and existing tests) and under an
+`/api` prefix (e.g. `/api/ingest_repo`) — the path production deployments
+and the built frontend use. See the router-mounting comment at the top of
+[`backend/app/main.py`](backend/app/main.py).
+
 ### UI-facing endpoints
 
 | Method | Path | Body / Params | Returns |
 |---|---|---|---|
-| `POST` | `/ingest_repo` | `{repo_path}` | `{graph_id, function_count, module_count}` |
+| `POST` | `/ingest_repo` | `{repo_path}` **or** `{repo_url}` | `{graph_id, function_count, module_count}` |
 | `GET` | `/entry_points` | `?graph_id=&max_count=4` | Root file nodes for the initial view |
 | `GET` | `/expand` | `?graph_id=&node_id=&action=callees\|functions` | `{children, edges}` |
 | `GET` | `/graph` | `?graph_id=&depth=1..3` | Full graph at the requested depth |
