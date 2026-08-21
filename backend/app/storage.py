@@ -82,7 +82,8 @@ CREATE TABLE IF NOT EXISTS graphs (
     graph_id    TEXT PRIMARY KEY,
     repo_path   TEXT NOT NULL,
     cir_version TEXT,
-    created_at  REAL DEFAULT (unixepoch())
+    created_at  REAL DEFAULT (unixepoch()),
+    owner       TEXT
 );
 
 CREATE TABLE IF NOT EXISTS nodes (
@@ -171,6 +172,18 @@ CREATE TABLE IF NOT EXISTS metadata (
 
 def _init_schema(db: sqlite3.Connection) -> None:
     db.executescript(_SCHEMA)
+    _migrate(db)
+
+
+def _migrate(db: sqlite3.Connection) -> None:
+    """Additive, idempotent schema upgrades for DBs created before a column
+    existed. CREATE TABLE IF NOT EXISTS above only helps fresh databases —
+    an existing flowify.db from before session scoping needs its `owner`
+    column added explicitly."""
+    cols = {row["name"] for row in db.execute("PRAGMA table_info(graphs)")}
+    if "owner" not in cols:
+        db.execute("ALTER TABLE graphs ADD COLUMN owner TEXT")
+    db.commit()
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -209,13 +222,23 @@ def new_graph_id() -> str:
     return uuid.uuid4().hex[:12]
 
 
-def save(payload: GraphPayload) -> None:
-    """Persist a full GraphPayload atomically, replacing any previous version."""
+def save(payload: GraphPayload, owner: Optional[str] = None) -> None:
+    """Persist a full GraphPayload atomically, replacing any previous version.
+
+    *owner* tags the graph with a session id (server mode) so it can be
+    scoped to the caller who created it. Re-saving an existing graph_id
+    (e.g. on /update) without an owner preserves whatever owner it already
+    had, rather than clearing it.
+    """
     gid = payload.graph_id
     with _tx() as cur:
         cur.execute(
-            "INSERT OR REPLACE INTO graphs(graph_id, repo_path, cir_version) VALUES (?,?,?)",
-            (gid, payload.repo_path, payload.cir_version),
+            """INSERT INTO graphs(graph_id, repo_path, cir_version, owner) VALUES (?,?,?,?)
+               ON CONFLICT(graph_id) DO UPDATE SET
+                 repo_path=excluded.repo_path,
+                 cir_version=excluded.cir_version,
+                 owner=COALESCE(excluded.owner, graphs.owner)""",
+            (gid, payload.repo_path, payload.cir_version, owner),
         )
 
         # Clear old rows so re-ingestion is a clean replace, not an append
@@ -434,13 +457,62 @@ def load_light(graph_id: str) -> Optional[GraphPayload]:
     return _load_payload(graph_id, include_code=False)
 
 
-def list_graphs() -> list[str]:
-    """Return all stored graph IDs, newest first."""
-    return [
-        r[0] for r in _conn().execute(
-            "SELECT graph_id FROM graphs ORDER BY created_at DESC"
+def list_graphs(owner: Optional[str] = None) -> list[str]:
+    """Return stored graph IDs, newest first. If *owner* is given, only
+    graphs tagged with that session id are returned (server-mode scoping);
+    graphs with no owner (created before scoping existed, or in local mode)
+    are never returned when an owner filter is active."""
+    if owner is not None:
+        rows = _conn().execute(
+            "SELECT graph_id FROM graphs WHERE owner=? ORDER BY created_at DESC",
+            (owner,),
         )
-    ]
+    else:
+        rows = _conn().execute("SELECT graph_id FROM graphs ORDER BY created_at DESC")
+    return [r[0] for r in rows]
+
+
+def get_owner(graph_id: str) -> Optional[str]:
+    row = _conn().execute("SELECT owner FROM graphs WHERE graph_id=?", (graph_id,)).fetchone()
+    return row["owner"] if row else None
+
+
+def find_graph_by_repo_path(repo_path: str) -> Optional[str]:
+    """Return the graph_id already ingested from this exact repo_path/URL,
+    or None. Used to make /mcp/ingest idempotent without loading every
+    stored graph into memory to compare repo_path (the old approach)."""
+    row = _conn().execute(
+        "SELECT graph_id FROM graphs WHERE repo_path=? ORDER BY created_at DESC LIMIT 1",
+        (repo_path,),
+    ).fetchone()
+    return row["graph_id"] if row else None
+
+
+def set_owner(graph_id: str, owner: str) -> None:
+    """Tag an already-saved graph with a session id, without the full
+    delete-and-reinsert that save() does — used right after pipeline.ingest()
+    returns, so a large graph isn't written to disk twice per request."""
+    with _tx() as cur:
+        cur.execute("UPDATE graphs SET owner=? WHERE graph_id=?", (owner, graph_id))
+
+
+def set_repo_path(graph_id: str, repo_path: str) -> None:
+    """Overwrite the stored repo_path — used after a git-URL ingest, where
+    pipeline.ingest() is handed a throwaway temp-clone directory but the
+    graph should remember the origin URL, not the deleted temp path."""
+    with _tx() as cur:
+        cur.execute("UPDATE graphs SET repo_path=? WHERE graph_id=?", (repo_path, graph_id))
+
+
+def delete_older_than(cutoff_epoch: float) -> list[str]:
+    """Delete every graph created before *cutoff_epoch*; return the deleted
+    graph_ids. Used by the server-mode TTL janitor."""
+    ids = [r[0] for r in _conn().execute(
+        "SELECT graph_id FROM graphs WHERE created_at < ?", (cutoff_epoch,)
+    )]
+    for gid in ids:
+        delete(gid)
+    return ids
 
 
 def delete(graph_id: str) -> bool:
