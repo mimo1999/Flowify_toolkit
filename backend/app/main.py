@@ -1641,6 +1641,25 @@ _RATE_LIMIT_MAX = int(os.environ.get("FLOWIFY_RATE_LIMIT_PER_MIN", "6"))
 _rate_buckets: dict[str, list[float]] = {}
 _rate_lock = None  # set lazily; threading is stdlib but avoid the import cost when unused
 
+# Endpoints that spend real LLM budget: ingest is forced onto the heuristic
+# provider (see pipeline.ingest()'s provider_override), so its only LLM cost
+# is one flow-summary call baked into ingestion itself — no separate guard
+# needed there. Query (2 calls/question) and an explicit flow-summary
+# regenerate are the surfaces a visitor can trigger repeatedly on demand.
+_LLM_ENDPOINT_SUFFIXES = ("/query", "/mcp/query")
+_LLM_ENDPOINT_INFIXES = ("/flow_summary/",)  # POST only; path has a {graph_id} segment
+
+# A per-IP-per-minute cap (above) stops one abusive visitor; it does nothing
+# against many different visitors collectively draining a *shared, global*
+# budget — which is exactly what Ollama Cloud's free tier is (a 5-hour
+# session / 7-day rolling allowance on the account, not per-caller). This
+# is a coarse, conservative backstop on top of the per-IP limit: once the
+# whole server has made too many LLM-backed requests in a day, every visitor
+# gets a clear 429 instead of the shared key silently running out mid-answer.
+_LLM_BUDGET_WINDOW_S = 86400.0
+_LLM_BUDGET_MAX = int(os.environ.get("FLOWIFY_LLM_CALLS_PER_DAY", "300"))
+_llm_budget_calls: list[float] = []
+
 
 def _client_ip(request: Request) -> str:
     fwd = request.headers.get("x-forwarded-for")
@@ -1649,12 +1668,20 @@ def _client_ip(request: Request) -> str:
     return request.client.host if request.client else "unknown"
 
 
+def _is_llm_endpoint(request: Request) -> bool:
+    if request.method != "POST":
+        return False
+    path = request.url.path.rstrip("/")
+    return path.endswith(_LLM_ENDPOINT_SUFFIXES) or any(inf in path for inf in _LLM_ENDPOINT_INFIXES)
+
+
 @app.middleware("http")
 async def _rate_limit_middleware(request: Request, call_next):
     """A per-IP, per-minute cap on the endpoints that actually cost money or
-    CPU (ingest, query). Deliberately not applied to read-only GETs. Only
-    active in server mode — local/desktop use has one user and no budget
-    to protect."""
+    CPU (ingest, query), plus a global per-day cap on the subset that spend
+    real LLM budget. Deliberately not applied to read-only GETs. Only active
+    in server mode — local/desktop use has one user and no shared budget to
+    protect."""
     if not IS_SERVER_MODE or request.method != "POST" or not any(
         request.url.path.rstrip("/").endswith(p) for p in _RATE_LIMITED_PREFIXES
     ):
@@ -1679,6 +1706,18 @@ async def _rate_limit_middleware(request: Request, call_next):
             )
         bucket.append(now)
         _rate_buckets[ip] = bucket
+
+        if _is_llm_endpoint(request):
+            global _llm_budget_calls
+            _llm_budget_calls = [t for t in _llm_budget_calls if now - t < _LLM_BUDGET_WINDOW_S]
+            if len(_llm_budget_calls) >= _LLM_BUDGET_MAX:
+                from fastapi.responses import JSONResponse
+                return JSONResponse(
+                    status_code=429,
+                    content={"detail": "AI mode has hit its shared daily budget — try again later. "
+                                        "Ingestion and graph browsing are unaffected."},
+                )
+            _llm_budget_calls.append(now)
 
     return await call_next(request)
 

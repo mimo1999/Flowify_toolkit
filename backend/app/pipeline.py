@@ -398,74 +398,84 @@ def _build_flow_summary(
 
 
 def ingest(repo_path: str) -> GraphPayload:
-    # Phase 1: Analyze repository context before ingestion
-    print(f"[Phase 1] Analyzing repository: {repo_path}")
-    repo_context_dict = bob_client.analyze_repository(repo_path)
-    try:
-        repo_context = RepositoryContext(**repo_context_dict)
-    except Exception as e:
-        print(f"  - repo context validation failed ({e}); falling back to defaults")
-        repo_context = RepositoryContext(fallback_used=True)
-    
-    print(f"  - Project type: {repo_context.project_type}")
-    print(f"  - Domain: {repo_context.domain}")
-    print(f"  - Architecture: {repo_context.architecture}")
-    print(f"  - Tech stack: {', '.join(repo_context.tech_stack) if repo_context.tech_stack else 'unknown'}")
-    print(f"  - Confidence: {repo_context.confidence:.2f}")
-    print(f"  - Fallback used: {repo_context.fallback_used}")
-    
-    # Build function graph with context awareness
-    g, function_nodes, function_edges = graph_builder.build_function_graph(repo_path)
+    # Ingestion (repo-context analysis, per-function/module enrichment, and
+    # the big llm_ingestion pass) is forced onto the heuristic provider,
+    # regardless of what LLM_PROVIDER/BYO-key is configured for the rest of
+    # the app. It runs dozens-to-hundreds of LLM calls for a real repo — on
+    # a shared, rate-limited server key (e.g. Ollama Cloud's free tier) that
+    # would burn the whole session/weekly budget on a single ingest. Query
+    # and the flow-summary narrative (_build_flow_summary, below, outside
+    # this override) are where "AI mode" actually applies: one or two calls
+    # each, on demand, per visitor.
+    with bob_client.provider_override(bob_client.heuristic_provider()):
+        # Phase 1: Analyze repository context before ingestion
+        print(f"[Phase 1] Analyzing repository: {repo_path}")
+        repo_context_dict = bob_client.analyze_repository(repo_path)
+        try:
+            repo_context = RepositoryContext(**repo_context_dict)
+        except Exception as e:
+            print(f"  - repo context validation failed ({e}); falling back to defaults")
+            repo_context = RepositoryContext(fallback_used=True)
 
-    # Phase 2: combined summary + semantic analysis (batched, one pass)
-    semantic_edges = _enrich_functions(function_nodes, g, repo_context)
-    
-    # Push summaries and semantics back into the networkx graph
-    for n in function_nodes:
-        if n.id in g.nodes:
-            g.nodes[n.id]["summary"] = n.summary
-            if n.semantics:
-                g.nodes[n.id]["intent"] = n.semantics.intent
-                g.nodes[n.id]["complexity"] = n.semantics.complexity
-                g.nodes[n.id]["criticality"] = n.semantics.criticality
-    
-    # Build modules with entry point detection and control flow analysis
-    module_nodes, module_edges, mod_to_funcs = module_abstractor.build_modules(
-        g,
-        function_nodes=function_nodes,
-        function_edges=function_edges,
-        declared_entry_points=repo_context.key_entry_points,
-    )
+        print(f"  - Project type: {repo_context.project_type}")
+        print(f"  - Domain: {repo_context.domain}")
+        print(f"  - Architecture: {repo_context.architecture}")
+        print(f"  - Tech stack: {', '.join(repo_context.tech_stack) if repo_context.tech_stack else 'unknown'}")
+        print(f"  - Confidence: {repo_context.confidence:.2f}")
+        print(f"  - Fallback used: {repo_context.fallback_used}")
 
-    graph_id = storage.new_graph_id()
-    payload = GraphPayload(
-        graph_id=graph_id,
-        repo_path=repo_path,
-        function_nodes=function_nodes,
-        function_edges=function_edges,
-        module_nodes=module_nodes,
-        module_edges=module_edges,
-        module_to_functions=mod_to_funcs,
-        semantic_edges=semantic_edges,
-    )
-    storage.save(payload)
+        # Build function graph with context awareness
+        g, function_nodes, function_edges = graph_builder.build_function_graph(repo_path)
 
-    # Store repository context metadata
-    storage.store_meta(graph_id, "repo_context", repo_context.model_dump())
+        # Phase 2: combined summary + semantic analysis (batched, one pass)
+        semantic_edges = _enrich_functions(function_nodes, g, repo_context)
 
-    llm_result, llm_prompt = llm_ingestion.ingest_ast_results(
-        repo_context,
-        function_nodes,
-        function_edges,
-        module_nodes,
-        mod_to_funcs,
-        semantic_edges,
-    )
-    llm_result.graph_id = graph_id
-    llm_result.repo_path = repo_path
-    storage.store_meta(graph_id, "llm_ingestion", llm_result.model_dump())
-    storage.store_meta(graph_id, "llm_ingestion_prompt", {"prompt": llm_prompt, "version": llm_result.prompt_version})
-    
+        # Push summaries and semantics back into the networkx graph
+        for n in function_nodes:
+            if n.id in g.nodes:
+                g.nodes[n.id]["summary"] = n.summary
+                if n.semantics:
+                    g.nodes[n.id]["intent"] = n.semantics.intent
+                    g.nodes[n.id]["complexity"] = n.semantics.complexity
+                    g.nodes[n.id]["criticality"] = n.semantics.criticality
+
+        # Build modules with entry point detection and control flow analysis
+        module_nodes, module_edges, mod_to_funcs = module_abstractor.build_modules(
+            g,
+            function_nodes=function_nodes,
+            function_edges=function_edges,
+            declared_entry_points=repo_context.key_entry_points,
+        )
+
+        graph_id = storage.new_graph_id()
+        payload = GraphPayload(
+            graph_id=graph_id,
+            repo_path=repo_path,
+            function_nodes=function_nodes,
+            function_edges=function_edges,
+            module_nodes=module_nodes,
+            module_edges=module_edges,
+            module_to_functions=mod_to_funcs,
+            semantic_edges=semantic_edges,
+        )
+        storage.save(payload)
+
+        # Store repository context metadata
+        storage.store_meta(graph_id, "repo_context", repo_context.model_dump())
+
+        llm_result, llm_prompt = llm_ingestion.ingest_ast_results(
+            repo_context,
+            function_nodes,
+            function_edges,
+            module_nodes,
+            mod_to_funcs,
+            semantic_edges,
+        )
+        llm_result.graph_id = graph_id
+        llm_result.repo_path = repo_path
+        storage.store_meta(graph_id, "llm_ingestion", llm_result.model_dump())
+        storage.store_meta(graph_id, "llm_ingestion_prompt", {"prompt": llm_prompt, "version": llm_result.prompt_version})
+
     # Track current git head for incremental updates.
     _, head = git_updater.changed_files_since(repo_path, None)
     if head:

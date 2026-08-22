@@ -1015,19 +1015,19 @@ _OLLAMA_CODE_MODELS = [
 ]
 
 
-def _ollama_running(host: str) -> bool:
+def _ollama_running(host: str, headers: dict | None = None) -> bool:
     """Return True if Ollama is reachable at *host*."""
     try:
-        r = requests.get(f"{host}/api/tags", timeout=2)
+        r = requests.get(f"{host}/api/tags", timeout=2, headers=headers)
         return r.status_code == 200
     except Exception:
         return False
 
 
-def _ollama_best_model(host: str, preferred: str | None = None) -> str | None:
+def _ollama_best_model(host: str, preferred: str | None = None, headers: dict | None = None) -> str | None:
     """Return the best available code model, or None if Ollama has nothing installed."""
     try:
-        data = requests.get(f"{host}/api/tags", timeout=3).json()
+        data = requests.get(f"{host}/api/tags", timeout=3, headers=headers).json()
         installed = {m["name"].split(":")[0].lower() for m in data.get("models", [])}
         installed_full = [m["name"] for m in data.get("models", [])]
     except Exception:
@@ -1057,28 +1057,41 @@ def _ollama_best_model(host: str, preferred: str | None = None) -> str | None:
 
 
 class OllamaProvider(LLMProvider):
-    """Ollama local LLM — no API key needed.
+    """Ollama — local (no key needed) or Ollama Cloud (ollama.com, needs an API key).
 
-    Calls POST /api/generate with stream=false.
-    Model is auto-selected from installed models (prefers code-focused models).
+    Calls POST /api/generate with stream=false. Model is auto-selected from
+    installed models when no explicit model is given (prefers code-focused
+    models) — that auto-pick is skipped whenever an api_key is present,
+    since Cloud's model catalog isn't "installed" in the local sense and an
+    explicit OLLAMA_MODEL is expected instead.
 
     Environment variables:
-        OLLAMA_HOST   (default: http://localhost:11434)
-        OLLAMA_MODEL  (default: auto-picked)
+        OLLAMA_HOST     (default: http://localhost:11434; set to
+                         https://ollama.com for Cloud)
+        OLLAMA_MODEL    (default: auto-picked locally; required for Cloud)
+        OLLAMA_API_KEY  (unset for local; required for Cloud — sent as
+                         Authorization: Bearer <key>, matching Ollama Cloud's
+                         documented auth format)
     """
 
     def __init__(
         self,
         host: str | None = None,
         model: str | None = None,
+        api_key: str | None = None,
     ) -> None:
         self.host = (host or os.environ.get("OLLAMA_HOST", "http://localhost:11434")).rstrip("/")
+        self.api_key = api_key or os.environ.get("OLLAMA_API_KEY", "")
+        self._headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else None
         # Resolve model: explicit arg > env var > auto-pick
         # (.strip() guards against a stray trailing space in OLLAMA_MODEL, which
         # otherwise leaks into the model name and the provider display label.)
         explicit = (model or os.environ.get("OLLAMA_MODEL", "")).strip()
-        self.model = _ollama_best_model(self.host, explicit or None) or "llama3"
-        print(f"[Ollama] host={self.host}  model={self.model}")
+        if explicit:
+            self.model = explicit
+        else:
+            self.model = _ollama_best_model(self.host, headers=self._headers) or "llama3"
+        print(f"[Ollama] host={self.host}  model={self.model}  cloud={bool(self.api_key)}")
 
     def _call(self, prompt: str) -> str:
         """Call Ollama.  Raises on any failure so `ask()` can skip caching."""
@@ -1096,6 +1109,7 @@ class OllamaProvider(LLMProvider):
                     "temperature": 0.2,   # low temp for deterministic code answers
                 },
             },
+            headers=self._headers,
             timeout=300,  # 5 min — models can be slow on first/cold call
         )
         resp.raise_for_status()
@@ -1277,7 +1291,9 @@ def provider_from_spec(
     """
     name = provider.lower().strip()
     if name in ("ollama", "local"):
-        return OllamaProvider(host=base_url or None, model=model or None)
+        # api_key is optional here: a local, unauthenticated Ollama host is a
+        # valid BYO target too (e.g. someone tunneling their own machine).
+        return OllamaProvider(host=base_url or None, model=model or None, api_key=api_key or None)
     if name in ("claude", "anthropic"):
         if not api_key:
             raise ValueError("api_key is required for provider 'anthropic'")
