@@ -4,6 +4,7 @@ import ReactFlow, {
   useNodesState, useEdgesState,
   Handle, Position,
   useReactFlow,
+  useStore as useRFStore,
   BackgroundVariant,
 } from "reactflow";
 import { useFlowStore } from "../store.js";
@@ -22,6 +23,10 @@ const SEMANTIC_KIND_CONFIG = {
 function getSemanticConfig(kind) {
   return SEMANTIC_KIND_CONFIG[kind] || SEMANTIC_KIND_CONFIG.CALLS;
 }
+
+// Above this many rendered nodes, skip fitView's animation (see the effect
+// that calls it) — the stretch of continuous work reads as lag, not polish.
+const FIT_VIEW_ANIMATE_THRESHOLD = 150;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Role badge — semantic_kind already distinguishes API/DB/Event/Sub for
@@ -201,10 +206,15 @@ function BranchStripe({ color, rounded }) {
 // ─────────────────────────────────────────────────────────────────────────────
 // Custom node types
 // ─────────────────────────────────────────────────────────────────────────────
-function FileNodeComponent({ data }) {
-  const { label, filePath, fnCount, description, isExpanded, isHighlighted, isSelected, isRoot, isDimmed, onToggleExpand, onDeepExpand, branchColor, metrics, fanRatio, prRatio } = data;
+const FileNodeComponent = React.memo(function FileNodeComponent({ id, data }) {
+  const { label, filePath, fnCount, description, isExpanded, isHighlighted, isSelected, isRoot, isDimmed, toggleExpand, deepExpand, branchColor, metrics, fanRatio, prRatio } = data;
+  // Below this zoom the label is barely legible anyway — drop everything
+  // that costs paint (glow layer, description text) and show just the box
+  // and its label, so zooming out on a big graph stays cheap.
+  const zoom = useRFStore((s) => s.transform[2]);
+  const lod = zoom < 0.5;
   // Don't show description if it's just the file path repeated
-  const showDesc = description && description !== filePath && !description.startsWith("backend/") && !description.startsWith("frontend/") && !description.startsWith("tests/");
+  const showDesc = !lod && description && description !== filePath && !description.startsWith("backend/") && !description.startsWith("frontend/") && !description.startsWith("tests/");
   const branchBorder = (!isHighlighted && !isSelected && branchColor) ? { borderColor: branchColor } : {};
   // Entry-point/root files are the "big picture" — give them visual weight
   // over files reached several hops away; heavily-connected files (summed
@@ -216,13 +226,13 @@ function FileNodeComponent({ data }) {
   // Worst-offender complexity in the file → border thickness; summed
   // PageRank → the same white "notable" glow used on function nodes.
   const borderWidthStyle = { borderWidth: complexityBorderWidth(metrics?.complexity) };
-  const glow = pagerankGlow(prRatio);
+  const glow = lod ? undefined : pagerankGlow(prRatio);
 
   return (
     <div
       title={metricsTooltip(metrics)}
       className={[
-        "group relative rounded-xl border transition-all duration-150 select-none",
+        "group relative rounded-xl border transition-[opacity,box-shadow,border-color,filter] duration-150 select-none",
         "bg-gradient-to-br from-blue-950/80 to-blue-900/40",
         isHighlighted
           ? "border-amber-400 shadow-[0_0_0_2px_rgba(251,191,36,0.25)] node-highlighted"
@@ -240,7 +250,7 @@ function FileNodeComponent({ data }) {
           <span className="text-blue-400 shrink-0"><FileIcon /></span>
           <span className="text-[10px] uppercase tracking-widest text-blue-400/70 font-semibold">File</span>
           <button
-            onClick={(e) => { e.stopPropagation(); (e.shiftKey ? onDeepExpand : onToggleExpand)?.(); }}
+            onClick={(e) => { e.stopPropagation(); (e.shiftKey ? deepExpand : toggleExpand)(id); }}
             title={isExpanded ? "Collapse" : "Expand to see functions (Shift-click: expand several levels)"}
             className="ml-auto shrink-0 -m-1 p-1 rounded text-blue-400/60 hover:text-blue-200 hover:bg-blue-800/40 transition-colors"
           >
@@ -264,10 +274,12 @@ function FileNodeComponent({ data }) {
       <Handle type="source" position={Position.Right} className="!bg-blue-500 !border-blue-700 !w-2 !h-2" />
     </div>
   );
-}
+});
 
-function FunctionNodeComponent({ data }) {
-  const { label, kind, filePath, description, isHighlighted, isSelected, isExpanded, hasCallees, semanticKind, isDimmed, onToggleExpand, onDeepExpand, branchColor, metrics, fanRatio, prRatio } = data;
+const FunctionNodeComponent = React.memo(function FunctionNodeComponent({ id, data }) {
+  const { label, kind, filePath, description, isHighlighted, isSelected, isExpanded, hasCallees, semanticKind, isDimmed, toggleExpand, deepExpand, branchColor, metrics, fanRatio, prRatio } = data;
+  const zoom = useRFStore((s) => s.transform[2]);
+  const lod = zoom < 0.5;
 
   const isClass = kind === "class";
   const role = resolveRole(semanticKind || "CALLS", filePath);
@@ -279,7 +291,7 @@ function FunctionNodeComponent({ data }) {
   // role (API/DB/Service/...) stays visible via its own badge below.
   const branchBorder = (!isHighlighted && !isSelected && branchColor) ? { borderColor: branchColor } : {};
   // Show description only if it's a real one (not a file path, not a stub)
-  const showDesc = description && !description.startsWith("(stub)") && description.length > 4;
+  const showDesc = !lod && description && !description.startsWith("(stub)") && description.length > 4;
   // Classes read as a bigger architectural unit than a plain helper function;
   // heavily-called/calling nodes (fan-in + fan-out) get an extra size boost.
   const boost = fanSizeBoost(fanRatio);
@@ -289,13 +301,13 @@ function FunctionNodeComponent({ data }) {
   // Cyclomatic complexity → border thickness; PageRank/centrality → a white
   // spotlight glow, distinct from the amber search-highlight and branch hues.
   const borderWidthStyle = { borderWidth: complexityBorderWidth(metrics?.complexity) };
-  const glow = pagerankGlow(prRatio);
+  const glow = lod ? undefined : pagerankGlow(prRatio);
 
   return (
     <div
       title={metricsTooltip(metrics)}
       className={[
-        "relative rounded-lg border transition-all duration-150 select-none",
+        "relative rounded-lg border transition-[opacity,box-shadow,border-color,filter] duration-150 select-none",
         `bg-gradient-to-br ${accent.bg}`,
         isHighlighted
           ? "border-amber-400 shadow-[0_0_0_2px_rgba(251,191,36,0.2)] node-highlighted"
@@ -324,7 +336,7 @@ function FunctionNodeComponent({ data }) {
           )}
           {hasCallees && (
             <button
-              onClick={(e) => { e.stopPropagation(); (e.shiftKey ? onDeepExpand : onToggleExpand)?.(); }}
+              onClick={(e) => { e.stopPropagation(); (e.shiftKey ? deepExpand : toggleExpand)(id); }}
               title={isExpanded ? "Collapse" : "Expand to see what this calls (Shift-click: expand several levels)"}
               className="ml-auto shrink-0 -m-1 p-1 rounded text-slate-500 hover:text-slate-200 hover:bg-slate-700/40 transition-colors"
             >
@@ -341,13 +353,13 @@ function FunctionNodeComponent({ data }) {
       <Handle type="source" position={Position.Right} className="!bg-indigo-500 !border-indigo-700 !w-1.5 !h-1.5" />
     </div>
   );
-}
+});
 
 // Translucent tinted band behind a branch's lane — a cheap stand-in for full
 // cluster containers: the eye groups a region before it reads individual
 // nodes. Non-interactive (no drag/select/pointer events) and rendered behind
 // real nodes.
-function LaneBackgroundComponent({ data }) {
+const LaneBackgroundComponent = React.memo(function LaneBackgroundComponent({ data }) {
   const { hue } = data;
   return (
     <div
@@ -361,7 +373,7 @@ function LaneBackgroundComponent({ data }) {
       }}
     />
   );
-}
+});
 
 const nodeTypes = {
   fileNode:     FileNodeComponent,
@@ -511,6 +523,7 @@ function GraphViewInner() {
   const clearSelection = useFlowStore((s) => s.clearSelection);
   const nodeMetrics    = useFlowStore((s) => s.nodeMetrics);
   const fileMetrics    = useFlowStore((s) => s.fileMetrics);
+  const nodeBudget     = useFlowStore((s) => s.nodeBudget);
 
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
@@ -596,7 +609,6 @@ function GraphViewInner() {
       const srcBranch = branchInfo[e.source];
       const tgtBranch = branchInfo[e.target];
       const sameBranch = srcBranch && tgtBranch && srcBranch.root === tgtBranch.root;
-      const touchesHover = hoveredId && (e.source === hoveredId || e.target === hoveredId);
 
       // Resolve the edge's color the same way regardless of hover — hover
       // only changes how PROMINENT it is, not what it means.
@@ -616,14 +628,13 @@ function GraphViewInner() {
       }
 
       // The graph should emphasize nodes, not edges, by default — edges stay
-      // faint until something calls them out (search path or hover).
+      // faint until something calls them out (search path or hover). Hover
+      // itself is intentionally NOT a dependency here — it's applied by a
+      // separate targeted effect below so a mouse-move doesn't rebuild every
+      // edge in the graph, only the handful touching the hovered node.
       let width, opacity;
       if (isHighlightedEdge) {
         stroke = "#f59e0b"; dash = undefined; width = 2.5; opacity = 0.95;
-      } else if (touchesHover) {
-        width = baseWidth + 0.8; opacity = 0.95;
-      } else if (hoveredId) {
-        width = 1; opacity = isContains ? 0.05 : 0.06;
       } else {
         width = 1; opacity = isContains ? 0.28 : 0.2;
       }
@@ -638,9 +649,10 @@ function GraphViewInner() {
         labelStyle: { fill: semCfg.color, fontSize: 8, fontWeight: 600 },
         labelBgStyle: { fill: "#07090f", fillOpacity: 0.8 },
         style: { stroke, strokeDasharray: dash, strokeWidth: width, opacity },
+        data: { isContains, isHighlightedEdge, baseWidth },
       };
     }).filter(Boolean);
-  }, [visibleEdges, visibleNodes, childrenOf, highlight, branchInfo, hoveredId]);
+  }, [visibleEdges, visibleNodes, childrenOf, highlight, branchInfo]);
 
   // Each branch gets its own compact grid pass, then lanes stack without overlap.
   const { positioned, lanes } = useMemo(
@@ -670,7 +682,11 @@ function GraphViewInner() {
       const isHighlighted = hl.has(n.id);
       const isExpanded  = !!expanded[n.id];
       const branch = branchInfo[n.id];
-      const isDimmed = !!hoverNeighbors && !hoverNeighbors.has(n.id);
+      // Hover dimming is applied by a separate targeted effect below, not
+      // here — baseline is always "not dimmed" so a mouse-move doesn't
+      // force every node's `data` object (and thus every memoized node
+      // component) to reallocate on each hover.
+      const isDimmed = false;
       // Function nodes look up their own metrics; file nodes get the same
       // signal aggregated across their functions (see fileMetrics), each
       // normalized against its own scale (file sums vs. function values).
@@ -699,30 +715,77 @@ function GraphViewInner() {
           // callees without asking the backend, so show it optimistically
           // (same as file nodes). If it truly has none, expanding is a no-op.
           hasCallees:  true,
-          onToggleExpand: () => toggleExpand(n.id),
-          onDeepExpand: () => deepExpand(n.id),
+          // Stable store-action references (zustand functions never change
+          // identity across renders) rather than a fresh closure allocated
+          // per node per rebuild — the components call these with `id`,
+          // which they get as ReactFlow's own node prop. Keeping `data`
+          // free of anything that reallocates on every render is what lets
+          // React.memo on the node components actually skip re-renders.
+          toggleExpand,
+          deepExpand,
           branchColor: branch ? branchNodeColor(branch.hue, branch.depth) : null,
           // Heatmap: size = fan-in/out, glow = PageRank, border = complexity.
           metrics,
           fanRatio: stats.maxFan ? fan / stats.maxFan : 0,
           prRatio: metrics && stats.maxPr ? metrics.pagerank / stats.maxPr : 0,
-          raw: n,
         },
       };
     });
     return [...laneNodes, ...functionNodes];
-  }, [positioned, highlight, expanded, selectedId, childrenOf, toggleExpand, deepExpand, branchInfo, hoverNeighbors, rootIdSet, laneNodes, nodeMetrics, metricsStats, fileMetrics, fileMetricsStats]);
+  }, [positioned, highlight, expanded, selectedId, childrenOf, toggleExpand, deepExpand, branchInfo, rootIdSet, laneNodes, nodeMetrics, metricsStats, fileMetrics, fileMetricsStats]);
 
   useEffect(() => {
     setNodes(rfNodes);
     setEdges(rfEdges);
   }, [rfNodes, rfEdges, setNodes, setEdges]);
 
+  // Targeted hover patch — runs only when hover changes, and only touches
+  // the nodes whose dimmed state actually flips (the hovered node's direct
+  // neighborhood), instead of rebuilding the whole `rfNodes` array. Nodes
+  // whose `data` reference doesn't change are skipped by React.memo.
+  useEffect(() => {
+    setNodes((nds) => nds.map((n) => {
+      if (n.type === "laneBg") return n;
+      const shouldDim = !!hoverNeighbors && !hoverNeighbors.has(n.id);
+      if (!!n.data.isDimmed === shouldDim) return n;
+      return { ...n, data: { ...n.data, isDimmed: shouldDim } };
+    }));
+  }, [hoverNeighbors, setNodes]);
+
+  // Targeted hover patch for edges — same idea: only edges touching the
+  // hovered node (or that were touching the previously hovered node) get a
+  // new style object; everything else keeps its reference.
+  useEffect(() => {
+    setEdges((eds) => eds.map((e) => {
+      const d = e.data;
+      if (!d || d.isHighlightedEdge) return e; // search-highlighted edges ignore hover
+      const touchesHover = hoveredId && (e.source === hoveredId || e.target === hoveredId);
+      let width, opacity;
+      if (touchesHover) {
+        width = d.baseWidth + 0.8; opacity = 0.95;
+      } else if (hoveredId) {
+        width = 1; opacity = d.isContains ? 0.05 : 0.06;
+      } else {
+        width = 1; opacity = d.isContains ? 0.28 : 0.2;
+      }
+      if (e.style.strokeWidth === width && e.style.opacity === opacity) return e;
+      return { ...e, style: { ...e.style, strokeWidth: width, opacity } };
+    }));
+  }, [hoveredId, setEdges]);
+
   useEffect(() => {
     const count = rfNodes.length;
     if (count === 0 || count === prevCountRef.current) return;
     prevCountRef.current = count;
-    const id = setTimeout(() => fitView({ padding: 0.12, duration: 350 }), 60);
+    // Animating fitView is a nice touch on small graphs but adds a 350ms
+    // stretch of continuous layout/paint work across every node on large
+    // ones — skip the animation once the view is big enough for that to be
+    // felt as lag rather than seen as polish.
+    const animate = count <= FIT_VIEW_ANIMATE_THRESHOLD;
+    const id = setTimeout(
+      () => fitView(animate ? { padding: 0.12, duration: 350 } : { padding: 0.12, duration: 0 }),
+      60,
+    );
     return () => clearTimeout(id);
   }, [rfNodes, fitView]);
 
@@ -731,6 +794,11 @@ function GraphViewInner() {
   return (
     <div className="w-full h-full relative">
       {isEmpty && <EmptyState />}
+      {nodeBudget?.truncated && (
+        <div className="absolute top-3 left-1/2 -translate-x-1/2 z-10 px-3 py-1.5 rounded-full text-[11px] font-medium text-amber-100 bg-amber-950/90 border border-amber-700/60 shadow-lg backdrop-blur-sm">
+          Showing {nodeBudget.shown} of {nodeBudget.total} nodes — zoom in or expand a module to see more
+        </div>
+      )}
       <ReactFlow
         nodes={nodes}
         edges={edges}
@@ -750,6 +818,7 @@ function GraphViewInner() {
         zoomOnScroll
         minZoom={0.1}
         maxZoom={2}
+        onlyRenderVisibleElements
       >
         <Background
           variant={BackgroundVariant.Dots}

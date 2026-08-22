@@ -24,6 +24,13 @@ export function getSessionId() {
 // Thin fetch wrapper: every backend call goes through this so the session
 // header (and, later, a BYO LLM-provider header) is attached exactly once
 // rather than re-typed at each of the ~15 call sites below.
+// Above this many nodes in a single view, ReactFlow keeps up but the render
+// starts to feel heavy even with culling/memoization — cap the view and show
+// a banner (see `nodeBudget` below) rather than silently dropping nodes or
+// letting the view degrade with no explanation. Ranked by degree so what's
+// kept is what's actually connected, not an arbitrary prefix.
+export const MAX_RENDERED_NODES = 600;
+
 export function apiFetch(url, options = {}) {
   return fetch(url, {
     ...options,
@@ -37,6 +44,28 @@ export function apiFetch(url, options = {}) {
 function collectDescendants(exp, id, out = new Set()) {
   for (const k of (exp[id] || [])) { out.add(k); collectDescendants(exp, k, out); }
   return out;
+}
+
+// If `nodes` exceeds MAX_RENDERED_NODES, keep only the top-N by degree
+// (fan-in + fan-out within this view) and drop edges that no longer have
+// both endpoints — mutates `nodes`/`edges` in place, returns budget info for
+// the UI to render an honest "showing N of M" banner instead of a silent cap.
+function applyNodeBudget(nodes, edges) {
+  const total = Object.keys(nodes).length;
+  if (total <= MAX_RENDERED_NODES) return { truncated: false, shown: total, total };
+  const degree = {};
+  Object.values(edges).forEach((e) => {
+    degree[e.source] = (degree[e.source] || 0) + 1;
+    degree[e.target] = (degree[e.target] || 0) + 1;
+  });
+  const ranked = Object.keys(nodes).sort((a, b) => (degree[b] || 0) - (degree[a] || 0));
+  const keep = new Set(ranked.slice(0, MAX_RENDERED_NODES));
+  Object.keys(nodes).forEach((id) => { if (!keep.has(id)) delete nodes[id]; });
+  Object.keys(edges).forEach((eid) => {
+    const e = edges[eid];
+    if (!nodes[e.source] || !nodes[e.target]) delete edges[eid];
+  });
+  return { truncated: true, shown: keep.size, total };
 }
 
 function removeSubtree(nn, ne, nexp, id, keepSelf) {
@@ -72,6 +101,11 @@ export const useFlowStore = create((set, get) => ({
   error: "",
   exportStatus: null, // "copied" | "downloading" | null — transient feedback
   serverStopped: false, // true once the user shuts the servers down
+
+  // Set by loadDepthView when the requested depth would render more than
+  // MAX_RENDERED_NODES — { truncated, shown, total } | null. Drives the
+  // "Showing N of M" banner so a capped view is disclosed, not silent.
+  nodeBudget: null,
 
   // Repository flow summary (generated at ingest, served by /flow_summary)
   flowSummary: null,
@@ -284,8 +318,9 @@ export const useFlowStore = create((set, get) => ({
       (data.edges || []).forEach((e) => {
         if (nodes[e.source] && nodes[e.target]) edges[e.id] = e;
       });
+      const nodeBudget = applyNodeBudget(nodes, edges);
       get()._pushHistory();
-      set({ nodes, edges, expanded: {}, rootIds: Object.keys(nodes), selectedId: null, currentDepth: depth });
+      set({ nodes, edges, expanded: {}, rootIds: Object.keys(nodes), selectedId: null, currentDepth: depth, nodeBudget });
     } catch (e) {
       set({ error: String(e) });
     } finally {
