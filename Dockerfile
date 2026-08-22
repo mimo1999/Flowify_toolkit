@@ -19,15 +19,28 @@ RUN npm run build
 
 FROM python:3.11-slim
 
+# Skip .pyc writes (nothing benefits from them in a container that starts
+# once and doesn't restart the interpreter) and flush stdout/stderr
+# immediately so Render's log stream isn't waiting on a buffer.
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
+
 # git is a hard runtime dependency, not just a build tool: cloner.py shells
 # out to it for git-URL ingest, and git_updater.py uses it for /update.
+# One RUN so the apt lists removal actually shrinks this layer instead of
+# just the next one.
 RUN apt-get update && apt-get install -y --no-install-recommends git \
-    && rm -rf /var/lib/apt/lists/*
-
-RUN useradd -m -u 1000 user
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd -m -u 1000 user
 
 COPY backend/requirements.txt /tmp/requirements.txt
-RUN pip install --no-cache-dir -r /tmp/requirements.txt
+# Plain uvicorn, not uvicorn[standard]: the extras (uvloop, httptools,
+# websockets, watchfiles, python-dotenv, pyyaml) are for perf tuning,
+# websocket routes, --reload, and .env loading — this app has none of
+# those (single worker by necessity, see the CMD comment below; no
+# websocket endpoints; env vars come from Render/docker run directly).
+RUN pip install -r /tmp/requirements.txt
 
 WORKDIR /app/backend
 COPY backend/ /app/backend/
