@@ -25,6 +25,26 @@ def _node_id(file_path: str, qualname: str) -> str:
     return f"{file_path}::{qualname}"
 
 
+def _dedupe_node_ids(nodes: "List[FunctionNode]") -> None:
+    """Disambiguate node ids that collide within one ingest, in place.
+
+    `_node_id()` is just `file::qualname`, but a single qualname can be
+    defined more than once in the same file — most commonly `@overload`
+    stubs (typing's legitimate way to give one function multiple type
+    signatures), but also things like conditionally-redefined functions.
+    Two nodes sharing an id crash storage.save()'s SQL insert (id+graph_id
+    is a primary key), so every id beyond the first occurrence gets a
+    `#<line>` suffix keyed on its start line, which is unique by
+    construction (two definitions can't start on the same line).
+    """
+    seen: Dict[str, int] = {}
+    for n in nodes:
+        count = seen.get(n.id, 0)
+        seen[n.id] = count + 1
+        if count > 0:
+            n.id = f"{n.id}#{n.lineno or count}"
+
+
 def _source_span_from_lines(start_line: int, end_line: int | None = None) -> CIRSourceSpan:
     return CIRSourceSpan(start_line=start_line, end_line=end_line or start_line)
 
@@ -674,6 +694,8 @@ def build_function_graph(repo_path: str) -> Tuple[nx.DiGraph, List[FunctionNode]
         nodes, edges = parse_file(fp, repo_root)
         all_nodes.extend(nodes)
         all_edges.extend(edges)
+
+    _dedupe_node_ids(all_nodes)
 
     # Resolve <symbol>:: targets to real node ids by short name match.
     name_index: Dict[str, List[str]] = {}
