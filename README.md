@@ -12,9 +12,8 @@ Flowify ingests a codebase through three phases (repo context → AST/semantic e
 - **Per-node descriptions** — every node shows a one-line description of what that function/class/module does, derived from its docstring or code via AST analysis (or an LLM when one is configured).
 - **Semantic edge types** — edges are colour-coded: blue = CALLS, green = EXPOSES_API, purple = USES_DB, yellow = EMITS_EVENT, red = CONSUMES_EVENT.
 - **Change Impact analysis** — click any function to see its risk level (low/medium/high/critical), caller list, DB operations it touches, and affected modules.
-- **Graph-grounded NLP queries** — ask questions in plain English; answers are anchored to real graph traversal with a "Grounded in N nodes" badge, numbered call-chain steps, and 👍/😐/👎 feedback. Call edges are resolved through a scoped, confidence-ranked matcher (self-call → attribute type → receiver class → module import → same-file → unique-repo-wide), not simple name matching — an ambiguous call is dropped rather than guessed, so the "call chain" in an answer reflects edges that actually exist.
+- **Graph-grounded NLP queries** — ask questions in plain English; answers are anchored to real graph traversal with a "Grounded in N nodes" badge, numbered call-chain steps, and 👍/😐/👎 feedback.
 - **Continuous learning** — query patterns and feedback adjust relevance scores and build a terminology map over time.
-- **Scales to large repos** — viewport culling, memoized nodes, and hover handling that only touches the nodes it affects keep the graph view responsive well past a thousand nodes; a whole-repo view is capped at 600 rendered nodes (highest-degree kept) with an on-screen "Showing N of M" banner instead of silently truncating or freezing the tab.
 
 ---
 
@@ -162,13 +161,6 @@ The same codebase runs four ways — see [Dockerfile](Dockerfile) and
   docker build -t flowify .
   docker run -p 7860:7860 -e FLOWIFY_MODE=server flowify
   ```
-  The image installs plain `uvicorn` (not `uvicorn[standard]`) since this
-  app runs a single worker with no websocket routes and no `--reload` in
-  the container — the extras (`uvloop`, `httptools`, `websockets`,
-  `watchfiles`, `python-dotenv`, `pyyaml`) would just add dead weight.
-  This trims what gets pulled/started on a cold container, but it doesn't
-  remove Render free tier's 15-minute idle spin-down — that ~30-60s cold
-  start on the next request is a platform behavior, not an image-size one.
 - **Local, one command** — the same image, pointed at your own folder,
   with `/shutdown` enabled and no session scoping:
   ```bash
