@@ -10,8 +10,14 @@ dist/
 # Claude / Claude Code
 .claude/
 CLAUDE.md
+AGENTS.md
+Agent.md
 *.claude
 .claudeignore
 _store/
 bob_sessions/
 .run-logs/
+
+# Working docs — local scratch/handoff material, not meant to be checked in
+HANDOFF.md
+BLOG_POST.md
