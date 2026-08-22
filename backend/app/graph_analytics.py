@@ -6,6 +6,7 @@ by /graph_analytics, the architecture report, and the MCP analytics tools.
 """
 from __future__ import annotations
 
+import time
 from collections import Counter, defaultdict
 from typing import Dict, List, Optional
 
@@ -19,6 +20,17 @@ _BETWEENNESS_EXACT_LIMIT = 800
 _BETWEENNESS_SAMPLE_K = 200
 _MAX_CYCLES = 25
 _MAX_CYCLE_LEN = 8
+# nx.simple_cycles enumerates candidates faster than _keep_cycle can reject
+# them (real repos measured well over 100k/sec) — a strongly-connected
+# cluster of same-named overload variants (`@overload def command(...)`
+# repeated per signature is common in typed public APIs) can produce a
+# cycle space where the overwhelming majority of candidates are rejected,
+# so the old "stop once we've kept _MAX_CYCLES" break never fires: ingest
+# hung for over an hour on a real-world repo before this cap existed. Both
+# a candidate-count and a wall-clock ceiling bound it regardless of how
+# adversarial the graph's naming/connectivity turns out to be.
+_MAX_CYCLE_CANDIDATES = 200_000
+_MAX_CYCLE_SECONDS = 5.0
 
 _COMPLEXITY_RANK = {"low": 0, "medium": 1, "high": 2, "very_high": 3}
 _CRITICALITY_RANK = {"low": 0, "medium": 1, "high": 2, "critical": 3}
@@ -122,11 +134,18 @@ def compute_analytics(payload: GraphPayload) -> dict:
         ]
 
     cycles: List[List[dict]] = []
+    cycles_truncated = False
     try:
-        for cyc in nx.simple_cycles(g, length_bound=_MAX_CYCLE_LEN):
+        t0 = time.monotonic()
+        for i, cyc in enumerate(nx.simple_cycles(g, length_bound=_MAX_CYCLE_LEN)):
             if _keep_cycle(cyc):
                 cycles.append(_cycle_payload(cyc))
             if len(cycles) >= _MAX_CYCLES:
+                break
+            # Check wall-clock only every so often — time.monotonic() every
+            # iteration would itself be a measurable cost at this loop's rate.
+            if i >= _MAX_CYCLE_CANDIDATES or (i % 5000 == 0 and time.monotonic() - t0 > _MAX_CYCLE_SECONDS):
+                cycles_truncated = True
                 break
     except Exception:
         pass
@@ -275,6 +294,7 @@ def compute_analytics(payload: GraphPayload) -> dict:
             "modules": len(payload.module_nodes),
             "languages": dict(lang_counts.most_common()),
             "cycle_count": len(cycles),
+            "cycles_truncated": cycles_truncated,
             "dead_code_count": len(dead_code),
         },
         "god_nodes": god_nodes,
