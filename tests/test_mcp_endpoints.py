@@ -214,6 +214,7 @@ class TestMCPQueryEndpoint:
             {"nodes": [], "edges": []},
             "query-id-123",
             nx.DiGraph(),
+            {},
         )
         mock_retrieval.explain.return_value = "Authentication flow explanation"
         
@@ -266,7 +267,7 @@ class TestMCPQueryEndpoint:
         mock_payload.function_nodes = []
         mock_storage.load_light.return_value = mock_payload
         import networkx as nx
-        mock_retrieval.retrieve_subgraph.return_value = ([], {}, "qid", nx.DiGraph())
+        mock_retrieval.retrieve_subgraph.return_value = ([], {}, "qid", nx.DiGraph(), {})
         mock_retrieval.explain.return_value = "No results"
 
         # Test valid depth
@@ -329,6 +330,7 @@ class TestMCPQueryEndpoint:
             {},
             "qid",
             nx.DiGraph(),
+            {},
         )
         mock_retrieval.explain.return_value = "Explanation"
         

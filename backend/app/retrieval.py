@@ -215,7 +215,7 @@ def _entry_nodes(g: nx.DiGraph, query: str, graph_id: str) -> List[str]:
     return entries
 
 
-def retrieve_subgraph(payload: GraphPayload, query: str, max_hops: int = 2) -> Tuple[List[str], dict, str, nx.DiGraph]:
+def retrieve_subgraph(payload: GraphPayload, query: str, max_hops: int = 2) -> Tuple[List[str], dict, str, nx.DiGraph, Dict[str, str]]:
     """Retrieve subgraph for query with learning tracking.
 
     Returns: (ordered_nodes, subgraph_dict, query_id, graph)
@@ -225,6 +225,12 @@ def retrieve_subgraph(payload: GraphPayload, query: str, max_hops: int = 2) -> T
     g = _graph_from_payload(payload)
     entries = _entry_nodes(g, query, payload.graph_id)
     visited: Dict[str, int] = {}
+    # BFS discovery parent — the node whose call actually reached this one,
+    # not just "whatever came before it in `order`". BFS visits nodes level
+    # by level, so a node's immediate predecessor in `order` is frequently a
+    # sibling with no edge to it at all; only `parent` reflects a real edge.
+    # explain()/build_execution_steps() key off this, not list adjacency.
+    parent: Dict[str, str] = {}
     order: List[str] = []
     frontier = [(e, 0) for e in entries]
     while frontier:
@@ -237,6 +243,8 @@ def retrieve_subgraph(payload: GraphPayload, query: str, max_hops: int = 2) -> T
             continue
         for _, tgt, d in g.out_edges(nid, data=True):
             if _is_invocation(d):
+                if tgt not in visited and tgt not in parent:
+                    parent[tgt] = nid
                 frontier.append((tgt, hops + 1))
 
     # Build subgraph payload
@@ -257,20 +265,21 @@ def retrieve_subgraph(payload: GraphPayload, query: str, max_hops: int = 2) -> T
         response_time_ms
     )
 
-    return order, {"nodes": sub_nodes, "edges": sub_edges, "entries": entries}, query_id, g
+    return order, {"nodes": sub_nodes, "edges": sub_edges, "entries": entries}, query_id, g, parent
 
 
 def build_execution_steps(
     payload: GraphPayload,
     ordered_ids: List[str],
     g: nx.DiGraph,
+    parent_map: Optional[Dict[str, str]] = None,
 ) -> List[ExecutionStep]:
     """Build ordered, structured execution steps from traversal results."""
     by_id = {n.id: n for n in payload.function_nodes}
     steps: List[ExecutionStep] = []
-    ordered_set = set(ordered_ids)
+    parent_map = parent_map or {}
 
-    for i, nid in enumerate(ordered_ids[:20]):
+    for nid in ordered_ids[:20]:
         n = by_id.get(nid)
         if not n:
             continue
@@ -285,13 +294,15 @@ def build_execution_steps(
             }
             semantic_kind = intent_to_kind.get(n.semantics.intent, semantic_kind)
 
-        # Find what edge type leads from previous step to this one
+        # Find what edge type leads from previous step to this one — keyed
+        # off the BFS discovery parent (a real edge), not the previous item
+        # in `ordered_ids`: BFS visits siblings before children, so the
+        # list's immediate predecessor is frequently unconnected to `nid`.
         edge_label = None
-        if i > 0:
-            prev_id = ordered_ids[i - 1]
-            if g.has_edge(prev_id, nid):
-                edge_data = g.get_edge_data(prev_id, nid) or {}
-                edge_label = edge_data.get("type", "CALLS")
+        prev_id = parent_map.get(nid)
+        if prev_id and g.has_edge(prev_id, nid):
+            edge_data = g.get_edge_data(prev_id, nid) or {}
+            edge_label = edge_data.get("type", "CALLS")
 
         steps.append(ExecutionStep(
             id=nid,
@@ -310,15 +321,20 @@ def explain(
     query: str,
     ordered_ids: List[str],
     prior_turns: Optional[List[dict]] = None,
+    g: Optional[nx.DiGraph] = None,
+    parent_map: Optional[Dict[str, str]] = None,
 ) -> str:
     by_id = {n.id: n for n in payload.function_nodes}
     summaries = []
     edge_info = []
+    parent_map = parent_map or {}
 
-    # Build graph for edge relationship info
-    g = _graph_from_payload(payload)
+    # Build graph for edge relationship info, unless the caller already has
+    # one from retrieve_subgraph (same repo, same call) — avoid rebuilding it.
+    if g is None:
+        g = _graph_from_payload(payload)
 
-    for i, nid in enumerate(ordered_ids[:15]):
+    for nid in ordered_ids[:15]:
         n = by_id.get(nid)
         if not n:
             continue
@@ -328,13 +344,14 @@ def explain(
         summaries.append(
             f"{n.name} ({n.file_path}) [{semantic_kind}/{intent}]: {s}"
         )
-        if i > 0:
-            prev_id = ordered_ids[i - 1]
-            if g.has_edge(prev_id, nid):
-                ed = g.get_edge_data(prev_id, nid) or {}
-                prev_node = by_id.get(prev_id)
-                if prev_node:
-                    edge_info.append(f"  {prev_node.name} --[{ed.get('type','CALLS')}]--> {n.name}")
+        # Keyed off the real BFS discovery parent, not list position — see
+        # build_execution_steps for why list-adjacency doesn't hold for BFS.
+        prev_id = parent_map.get(nid)
+        if prev_id and g.has_edge(prev_id, nid):
+            ed = g.get_edge_data(prev_id, nid) or {}
+            prev_node = by_id.get(prev_id)
+            if prev_node:
+                edge_info.append(f"  {prev_node.name} --[{ed.get('type','CALLS')}]--> {n.name}")
 
     if not summaries:
         return "No relevant functions found in the graph for that query."

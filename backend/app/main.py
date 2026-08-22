@@ -533,10 +533,10 @@ def query_graph(req: QueryRequest):
     conv_id = req.conversation_id or uuid.uuid4().hex[:12]
     prior_turns: list = learning.load_conversation(req.graph_id, conv_id) if req.conversation_id else []
 
-    # Retrieve with learning tracking; graph returned for step building
-    ordered, sub, query_id, g = retrieval.retrieve_subgraph(payload, req.query, max_hops=req.depth)
-    explanation = retrieval.explain(payload, req.query, ordered, prior_turns=prior_turns)
-    execution_steps = retrieval.build_execution_steps(payload, ordered, g)
+    # Retrieve with learning tracking; graph + BFS parent map returned for step building
+    ordered, sub, query_id, g, parent_map = retrieval.retrieve_subgraph(payload, req.query, max_hops=req.depth)
+    explanation = retrieval.explain(payload, req.query, ordered, prior_turns=prior_turns, g=g, parent_map=parent_map)
+    execution_steps = retrieval.build_execution_steps(payload, ordered, g, parent_map)
 
     # Persist turn so follow-up queries see it
     prior_turns.append({"query": req.query, "summary": explanation[:300]})
@@ -582,8 +582,8 @@ def mcp_query_repo(req: QueryRequest):
         prior_turns: list = learning.load_conversation(req.graph_id, conv_id) if req.conversation_id else []
 
         # Retrieve subgraph with learning tracking
-        ordered, sub, query_id, _g = retrieval.retrieve_subgraph(payload, req.query, max_hops=req.depth)
-        explanation = retrieval.explain(payload, req.query, ordered, prior_turns=prior_turns)
+        ordered, sub, query_id, _g, _parent_map = retrieval.retrieve_subgraph(payload, req.query, max_hops=req.depth)
+        explanation = retrieval.explain(payload, req.query, ordered, prior_turns=prior_turns, g=_g, parent_map=_parent_map)
 
         # Persist turn
         prior_turns.append({"query": req.query, "summary": explanation[:300]})
