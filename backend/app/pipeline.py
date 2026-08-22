@@ -17,6 +17,24 @@ from .models import (
 _CRITICALITY_RANK = {"critical": 3, "high": 2, "medium": 1, "low": 0}
 
 
+class RepoTooLargeError(ValueError):
+    """Raised when a repo's parsed node count exceeds the caller's max_nodes.
+
+    Deliberately a ValueError subclass, not a bare exception: callers that
+    don't pass max_nodes never see this (the check is skipped entirely), so
+    existing behavior for local/MCP callers is unchanged.
+    """
+
+    def __init__(self, node_count: int, max_nodes: int):
+        self.node_count = node_count
+        self.max_nodes = max_nodes
+        super().__init__(
+            f"repo has {node_count} parseable nodes, exceeding the {max_nodes}-node limit "
+            f"for this deployment — ingest it locally instead (see the README's Deployment "
+            f"section) or run against a smaller subset of the repo"
+        )
+
+
 def _is_callable(node: FunctionNode) -> bool:
     return node.kind in ("function", "callable") or node.type in ("function", "method")
 
@@ -397,7 +415,12 @@ def _build_flow_summary(
     )
 
 
-def ingest(repo_path: str) -> GraphPayload:
+def ingest(repo_path: str, max_nodes: int | None = None) -> GraphPayload:
+    """Ingest *repo_path*. If max_nodes is given, aborts with RepoTooLargeError
+    right after parsing — before the memory-heavy stages (module clustering,
+    community detection, analytics) run — rather than letting a large repo
+    exhaust a memory-constrained host. Unset for local/MCP callers, whose
+    resources are their own to spend; server mode sets it (see main.py)."""
     # Ingestion (repo-context analysis, per-function/module enrichment, and
     # the big llm_ingestion pass) is forced onto the heuristic provider,
     # regardless of what LLM_PROVIDER/BYO-key is configured for the rest of
@@ -426,6 +449,14 @@ def ingest(repo_path: str) -> GraphPayload:
 
         # Build function graph with context awareness
         g, function_nodes, function_edges = graph_builder.build_function_graph(repo_path)
+
+        if max_nodes is not None and len(function_nodes) > max_nodes:
+            # A repo's *file count* is a poor proxy for the memory this
+            # pipeline needs — click's 79 files parse into 2275 nodes and
+            # 18721 edges, which OOM'd a 512 MB container during module
+            # clustering. Check the real cost driver (parsed node count)
+            # before spending any more memory on it.
+            raise RepoTooLargeError(len(function_nodes), max_nodes)
 
         # Phase 2: combined summary + semantic analysis (batched, one pass)
         semantic_edges = _enrich_functions(function_nodes, g, repo_context)

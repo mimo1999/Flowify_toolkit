@@ -83,7 +83,7 @@ class TestMCPIngestEndpoint:
         assert data["repo_context"]["project_type"] == "web_api"
         
         # Verify mocks called
-        mock_pipeline.ingest.assert_called_once_with("/test/repo")
+        mock_pipeline.ingest.assert_called_once_with("/test/repo", max_nodes=None)
         mock_storage.load_meta.assert_called_once_with("test-graph-123", "repo_context")
     
     def test_ingest_idempotent_existing_repo(self, client, mock_pipeline, mock_storage):

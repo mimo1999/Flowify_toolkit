@@ -25,6 +25,11 @@ from . import (
     bob_export, pipeline, storage, retrieval, module_abstractor, learning,
     knowledge as knowledge_mod, graph_analytics, report as report_mod,
 )
+# Imported directly (not via the `pipeline` module reference above) so it
+# stays a real exception class in tests that mock out app.main.pipeline
+# wholesale — `pipeline.RepoTooLargeError` would otherwise resolve to a
+# MagicMock attribute, which `except` can't catch.
+from .pipeline import RepoTooLargeError
 from .models import (
     BobGraphRequest, IngestRequest, UpdateRequest, QueryRequest, QueryResponse,
     FeedbackRequest, MCPIngestResponse, MCPQueryResponse,
@@ -241,6 +246,13 @@ _ALLOWED_ROOTS = [
     if p.strip()
 ]
 
+# Server-mode-only cap on parsed node count (see _do_ingest). 800 matches
+# graph_analytics.py's own _BETWEENNESS_EXACT_LIMIT — already this
+# codebase's established line for "big enough that exact graph algorithms
+# get expensive" — and sits safely below the ~2275-node repo that OOM'd a
+# 512 MB free-tier container.
+_MAX_INGEST_NODES = int(os.environ.get("FLOWIFY_MAX_NODES", "800"))
+
 
 def _validate_local_path(repo_path: str) -> str:
     """In server mode, resolve *repo_path* and reject anything that doesn't
@@ -283,21 +295,31 @@ def _do_ingest(req: IngestRequest):
     from . import cloner
 
     owner = (_session_ctx.get() or None) if IS_SERVER_MODE else None
+    # File count is a poor proxy for the memory a large repo actually costs
+    # (click's 79 files parse into 2275 nodes / 18721 edges, which OOM'd this
+    # app's 512 MB free-tier container during module clustering) — so this
+    # caps the real cost driver, checked right after parsing, before any of
+    # the memory-heavy downstream stages run. Unset in local mode: that's
+    # your own machine's resources to spend.
+    max_nodes = _MAX_INGEST_NODES if IS_SERVER_MODE else None
 
-    if req.repo_url:
-        try:
-            display_path = cloner.validate_repo_url(req.repo_url)
-            with cloner.clone_to_temp(req.repo_url) as local_path:
-                payload = pipeline.ingest(str(local_path))
-        except cloner.InvalidRepoUrl as e:
-            raise HTTPException(status_code=400, detail=str(e)) from e
-        storage.set_repo_path(payload.graph_id, display_path)
-        payload.repo_path = display_path
-    elif req.repo_path:
-        resolved = _validate_local_path(req.repo_path)
-        payload = pipeline.ingest(resolved)
-    else:
-        raise HTTPException(status_code=400, detail="repo_path or repo_url is required")
+    try:
+        if req.repo_url:
+            try:
+                display_path = cloner.validate_repo_url(req.repo_url)
+                with cloner.clone_to_temp(req.repo_url) as local_path:
+                    payload = pipeline.ingest(str(local_path), max_nodes=max_nodes)
+            except cloner.InvalidRepoUrl as e:
+                raise HTTPException(status_code=400, detail=str(e)) from e
+            storage.set_repo_path(payload.graph_id, display_path)
+            payload.repo_path = display_path
+        elif req.repo_path:
+            resolved = _validate_local_path(req.repo_path)
+            payload = pipeline.ingest(resolved, max_nodes=max_nodes)
+        else:
+            raise HTTPException(status_code=400, detail="repo_path or repo_url is required")
+    except RepoTooLargeError as e:
+        raise HTTPException(status_code=413, detail=str(e)) from e
 
     if owner:
         storage.set_owner(payload.graph_id, owner)
@@ -419,6 +441,7 @@ def build_graph_for_bob(req: BobGraphRequest):
             include_full_graph=include_full,
             include_view=req.include_view,
             include_llm_ingestion=req.include_llm_ingestion,
+            max_nodes=_MAX_INGEST_NODES if IS_SERVER_MODE else None,
         )
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc

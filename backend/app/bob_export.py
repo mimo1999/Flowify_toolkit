@@ -40,13 +40,19 @@ def build_bob_graph_response(
     include_full_graph: bool = True,
     include_view: bool = True,
     include_llm_ingestion: bool = True,
+    max_nodes: int | None = None,
 ) -> Dict[str, Any]:
-    """Ingest `repo_path` and return a Bob-ready graph export."""
+    """Ingest `repo_path` and return a Bob-ready graph export.
+
+    max_nodes: forwarded to pipeline.ingest() — see its docstring and
+    pipeline.RepoTooLargeError. Unset for local/MCP use; main.py passes it
+    in server mode.
+    """
     root = Path(repo_path).expanduser().resolve()
     if not root.exists() or not root.is_dir():
         raise ValueError(f"repo_path must be an existing directory: {repo_path}")
 
-    payload = pipeline.ingest(str(root))
+    payload = pipeline.ingest(str(root), max_nodes=max_nodes)
     repo_context = storage.load_meta(payload.graph_id, "repo_context") or {}
     llm_ingestion = storage.load_meta(payload.graph_id, "llm_ingestion") if include_llm_ingestion else None
 
