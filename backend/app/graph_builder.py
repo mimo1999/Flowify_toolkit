@@ -159,6 +159,16 @@ class _Visitor(ast.NodeVisitor):
             adapter_metadata={"adapter": "python_ast"},
         ))
         self.imports: List[str] = []
+        # local name -> full imported path, e.g. "np" -> "numpy",
+        # "ingest" -> "app.pipeline.ingest". Populated by visit_Import/
+        # visit_ImportFrom, consumed by the call-edge resolver in
+        # build_function_graph() (previously collected and never read).
+        self.import_map: Dict[str, str] = {}
+        # class qualname -> {attr_name: TypeName}, from `self.x = Foo(...)`
+        # assignments seen while visiting __init__. Lets the resolver turn
+        # `self._preprocessor.fit()` into a specific class's fit(), instead
+        # of every fit() in the repo.
+        self.class_attr_types: Dict[str, Dict[str, str]] = {}
 
     def _qual(self, name: str) -> str:
         return ".".join(self.qual_stack + [name])
@@ -224,6 +234,8 @@ class _Visitor(ast.NodeVisitor):
     def visit_Import(self, node: ast.Import):
         for alias in node.names:
             self.imports.append(alias.name)
+            local = alias.asname or alias.name.split(".", 1)[0]
+            self.import_map[local] = alias.name
             self.edges.append(FunctionEdge(
                 type="IMPORTS", source_id=self.file_id,
                 target_id=f"<module>::{alias.name}",
@@ -241,6 +253,8 @@ class _Visitor(ast.NodeVisitor):
         for alias in node.names:
             full = f"{mod}.{alias.name}" if mod else alias.name
             self.imports.append(full)
+            local = alias.asname or alias.name
+            self.import_map[local] = full
             self.edges.append(FunctionEdge(
                 type="IMPORTS", source_id=self.file_id,
                 target_id=f"<module>::{full}",
@@ -314,6 +328,17 @@ class _Visitor(ast.NodeVisitor):
             adapter_metadata={"adapter": "python_ast"},
         ))
 
+        # enclosing_class is the FULL dotted qualname of whatever class(es)
+        # this function/method is nested in, e.g. "Outer.Inner" — qual_stack
+        # hasn't been pushed with this function's own name yet at this point,
+        # so it holds exactly the enclosing chain. Used by the call-edge
+        # resolver in build_function_graph() to turn `self.foo()` into the
+        # one specific `EnclosingClass.foo`, instead of every `foo` in the repo.
+        enclosing_class = ".".join(self.qual_stack) if self.qual_stack else None
+
+        if node.name == "__init__" and enclosing_class:
+            self._scan_self_attr_types(node, enclosing_class)
+
         # collect calls inside this function body
         for sub in ast.walk(node):
             if isinstance(sub, ast.Call):
@@ -330,10 +355,25 @@ class _Visitor(ast.NodeVisitor):
                     ))
                 callee = self._call_name(sub.func)
                 if callee:
+                    # receiver is the expression the call was made on, e.g.
+                    # "self" for self.foo(), "self._preprocessor" for
+                    # self._preprocessor.fit(), "np" for np.array(), or None
+                    # for a bare foo(). This — plus enclosing_class and
+                    # import_map/class_attr_types stashed on the file node —
+                    # is what lets the resolver disambiguate instead of
+                    # fanning out to every same-named function in the repo.
+                    receiver = (
+                        self._expr_name(sub.func.value)
+                        if isinstance(sub.func, ast.Attribute) else None
+                    )
                     self.edges.append(FunctionEdge(
                         type="CALLS", relationship="INVOKES",
                         source_id=nid, target_id=f"<symbol>::{callee}",
-                        adapter_metadata={"adapter": "python_ast", "callee": callee},
+                        adapter_metadata={
+                            "adapter": "python_ast", "callee": callee,
+                            "receiver": receiver, "enclosing_class": enclosing_class,
+                            "source_file": self.file_path,
+                        },
                     ))
 
         self.qual_stack.append(node.name)
@@ -369,6 +409,32 @@ class _Visitor(ast.NodeVisitor):
         module_name = call.args[0].value
         return module_name if isinstance(module_name, str) else None
 
+    def _scan_self_attr_types(self, init_node, enclosing_class: str) -> None:
+        """Record `self.x = SomeClass(...)` assignments from an __init__ body
+        into self.class_attr_types[enclosing_class][x] = "SomeClass".
+
+        This is what lets the resolver turn `self._preprocessor.fit()` into
+        the one specific class's fit() instead of every fit() in the repo —
+        by far the most common form of otherwise-unresolvable attribute
+        access in typical OOP composition (sklearn-style pipelines, etc).
+        Deliberately shallow: only direct `self.attr = Call(...)` at any
+        depth in __init__ (covers the common case; doesn't attempt control
+        flow, so a conditionally-reassigned attribute just keeps whichever
+        assignment is walked last).
+        """
+        attr_types = self.class_attr_types.setdefault(enclosing_class, {})
+        for sub in ast.walk(init_node):
+            if not isinstance(sub, ast.Assign):
+                continue
+            if not (isinstance(sub.value, ast.Call) and isinstance(sub.value.func, (ast.Name, ast.Attribute))):
+                continue
+            type_name = self._call_name(sub.value.func)
+            if not type_name or not type_name[:1].isupper():
+                continue  # heuristic: only treat calls to Capitalized names as constructors
+            for target in sub.targets:
+                if isinstance(target, ast.Attribute) and isinstance(target.value, ast.Name) and target.value.id == "self":
+                    attr_types[target.attr] = type_name
+
 
 def parse_file(file_path: Path, repo_root: Path) -> Tuple[List[FunctionNode], List[FunctionEdge]]:
     language = detect_language(file_path)
@@ -392,6 +458,13 @@ def parse_python_file(file_path: Path, repo_root: Path) -> Tuple[List[FunctionNo
     rel = str(file_path.relative_to(repo_root)).replace("\\", "/")
     v = _Visitor(rel, source)
     v.visit(tree)
+    # Stash per-file resolver context on the file node (v.nodes[0], appended
+    # in __init__) rather than widening parse_file()'s return signature —
+    # every language adapter shares that signature, and adapter_metadata is
+    # already the free-form place for adapter-specific extras. Consumed by
+    # the call-edge resolver in build_function_graph().
+    v.nodes[0].adapter_metadata["import_map"] = v.import_map
+    v.nodes[0].adapter_metadata["class_attr_types"] = v.class_attr_types
     return v.nodes, v.edges
 
 
@@ -686,6 +759,110 @@ def _edges_from_pyan(
     return edges
 
 
+def _qualname_suffix_match(name_index: Dict[str, List[str]], short: str, class_name: str) -> str | None:
+    """Among nodes named *short*, return the one id whose qualname is
+    exactly "<class_name>.<short>" — regardless of which file it's in
+    (handles a class attribute typed from an imported class). Returns None
+    if there isn't exactly one such match, so an ambiguous case (e.g. two
+    unrelated classes in the repo happening to share a name) falls through
+    to a lower tier or gets dropped, rather than guessing."""
+    suffix = f"::{class_name}.{short}"
+    matches = [nid for nid in name_index.get(short, []) if nid.endswith(suffix)]
+    return matches[0] if len(matches) == 1 else None
+
+
+def _resolve_call_target(
+    e: FunctionEdge,
+    short: str,
+    name_index: Dict[str, List[str]],
+    node_id_set: set,
+    file_functions_index: Dict[str, Dict[str, str]],
+    function_type_by_id: Dict[str, str],
+    class_attr_types_by_file: Dict[str, Dict[str, Dict[str, str]]],
+    file_import_maps: Dict[str, Dict[str, str]],
+    file_stem_index: Dict[str, List[str]],
+) -> Tuple[str, float, str] | None:
+    """Resolve one `<symbol>::short` call target to at most one node id.
+
+    Returns (target_id, confidence, reasoning) or None if unresolvable.
+    Deliberately returns at most one id — never a list — so a caller with
+    an ambiguous target gets either its one real callee or no edge at all,
+    not an edge to every function that happens to share a name (which is
+    what this replaced; see build_function_graph's comment on why that
+    mattered in practice, not just in theory).
+
+    Tiers, checked in order, first match wins:
+      1. self.foo() inside a known enclosing class -> that class's foo
+      2. self.attr.foo() where __init__ recorded attr's type -> TypeName.foo
+      3. Receiver.foo() where Receiver is a class name in scope -> Receiver.foo
+      4. module_alias.foo() where module_alias is an import (e.g. this
+         codebase's own `from . import pipeline, storage, ...` style,
+         `pipeline.ingest(...)`) -> foo in the file that alias points at
+      5. bare foo() -> a function (not method) defined in the same file
+      6. bare foo() -> a function (not method) uniquely named repo-wide
+    Anything not caught by one of these is dropped rather than guessed at.
+    Non-Python edges (no receiver/enclosing_class captured — see
+    graph_builder.py's module docstring on the regex-based adapters) only
+    ever reach tiers 5-6, at reduced confidence, since there's no receiver
+    information to support the class/module-aware tiers at all.
+    """
+    meta = e.adapter_metadata or {}
+    is_python = meta.get("adapter") == "python_ast"
+    receiver = meta.get("receiver")
+    enclosing_class = meta.get("enclosing_class")
+    source_file = meta.get("source_file") or e.source_id.split("::", 1)[0]
+
+    if is_python and receiver == "self" and enclosing_class:
+        cid = _node_id(source_file, f"{enclosing_class}.{short}")
+        if cid in node_id_set:
+            return cid, 0.95, "self-call resolved within the enclosing class"
+
+    if is_python and receiver and receiver.startswith("self.") and enclosing_class:
+        attr = receiver.split(".", 1)[1]
+        attr_type = class_attr_types_by_file.get(source_file, {}).get(enclosing_class, {}).get(attr)
+        if attr_type:
+            cid = _qualname_suffix_match(name_index, short, attr_type)
+            if cid:
+                return cid, 0.90, f"resolved via self.{attr}'s recorded type ({attr_type})"
+
+    if is_python and receiver and "." not in receiver and receiver not in ("self", "cls"):
+        cid = _qualname_suffix_match(name_index, short, receiver)
+        if cid:
+            return cid, 0.85, f"resolved via receiver class {receiver}"
+
+        imported = file_import_maps.get(source_file, {}).get(receiver)
+        if imported:
+            stem = imported.rsplit(".", 1)[-1]
+            candidate_files = file_stem_index.get(stem, [])
+            matches = {
+                file_functions_index[fp][short]
+                for fp in candidate_files
+                if short in file_functions_index.get(fp, {})
+            }
+            if len(matches) == 1:
+                return next(iter(matches)), 0.90, f"resolved via imported module alias {receiver} ({imported})"
+
+    if receiver is None:
+        same_file = file_functions_index.get(source_file, {}).get(short)
+        if same_file:
+            return same_file, 0.80 if is_python else 0.65, "same-file function definition"
+
+    # Last resort, tried whether or not there's a receiver: if exactly one
+    # *function* (not method) in the whole repo has this name, that's a
+    # strong enough signal to use even when the receiver couldn't be traced
+    # to its defining file — e.g. `bob_client.ask_json(...)` where
+    # bob_client.py is a pass-through shim that imports and re-exports
+    # ask_json rather than defining it, so the module-alias tier above
+    # can't find it there, but it's still uniquely named across the repo.
+    # Still gated on true uniqueness, so this can't reintroduce fan-out.
+    candidates = [nid for nid in name_index.get(short, []) if function_type_by_id.get(nid) == "function"]
+    if len(candidates) == 1:
+        conf = (0.65 if is_python else 0.50) if receiver is None else 0.55
+        return candidates[0], conf, "unique repo-wide function match"
+
+    return None
+
+
 def build_function_graph(repo_path: str) -> Tuple[nx.DiGraph, List[FunctionNode], List[FunctionEdge]]:
     repo_root = Path(repo_path).resolve()
     all_nodes: List[FunctionNode] = []
@@ -697,10 +874,40 @@ def build_function_graph(repo_path: str) -> Tuple[nx.DiGraph, List[FunctionNode]
 
     _dedupe_node_ids(all_nodes)
 
-    # Resolve <symbol>:: targets to real node ids by short name match.
+    # Resolve <symbol>:: targets to real node ids. See _resolve_call_target's
+    # docstring for the tiered strategy — the key property is that each edge
+    # resolves to at most ONE target (or is dropped), never a fan-out to
+    # every same-named candidate. That fan-out used to be the behavior here
+    # and it was bad enough to distort the product's own "most important
+    # functions" ranking: on a real repo, every same-named __init__ ended up
+    # "calling" every other __init__, making them the top-ranked nodes by
+    # out-degree purely from the artifact.
     name_index: Dict[str, List[str]] = {}
+    file_functions_index: Dict[str, Dict[str, str]] = {}
+    function_type_by_id: Dict[str, str] = {}
+    class_attr_types_by_file: Dict[str, Dict[str, Dict[str, str]]] = {}
+    file_import_maps: Dict[str, Dict[str, str]] = {}
+    node_id_set: set = set()
     for n in all_nodes:
         name_index.setdefault(n.name, []).append(n.id)
+        node_id_set.add(n.id)
+        function_type_by_id[n.id] = n.type
+        if n.type == "function":
+            file_functions_index.setdefault(n.file_path, {})[n.name] = n.id
+        if n.kind == "file":
+            meta = n.adapter_metadata or {}
+            if meta.get("class_attr_types"):
+                class_attr_types_by_file[n.file_path] = meta["class_attr_types"]
+            if meta.get("import_map"):
+                file_import_maps[n.file_path] = meta["import_map"]
+    # file path stem (no dir, no extension) -> that file's path. Used to turn
+    # a module-alias call like `pipeline.ingest(...)` (very common in this
+    # codebase's own style: `from . import pipeline, storage, ...`) into
+    # "look for `ingest` specifically in a file named pipeline.*" rather than
+    # searching the whole repo by short name alone.
+    file_stem_index: Dict[str, List[str]] = {}
+    for fp in file_functions_index:
+        file_stem_index.setdefault(Path(fp).stem, []).append(fp)
 
     resolved: List[FunctionEdge] = []
     external_nodes: Dict[str, FunctionNode] = {}
@@ -708,16 +915,34 @@ def build_function_graph(repo_path: str) -> Tuple[nx.DiGraph, List[FunctionNode]
         tgt = e.target_id
         if tgt.startswith("<symbol>::"):
             short = tgt.split("::", 1)[1]
-            candidates = name_index.get(short, [])
-            for cid in candidates:
-                if cid != e.source_id:
-                    resolved.append(FunctionEdge(
-                        type=e.type,
-                        relationship=e.relationship,
-                        source_id=e.source_id,
-                        target_id=cid,
-                        adapter_metadata=e.adapter_metadata,
-                    ))
+            hit = _resolve_call_target(
+                e, short, name_index, node_id_set, file_functions_index,
+                function_type_by_id, class_attr_types_by_file,
+                file_import_maps, file_stem_index,
+            )
+            # Drop self-loops (matches the previous resolver's explicit
+            # `cid != e.source_id` guard). The tiered resolver is precise
+            # enough that a self-loop here would usually mean genuine
+            # recursion (e.g. a static helper calling itself via its own
+            # class name) rather than a resolution artifact, but the graph
+            # model/UI/analytics weren't built with self-loops in mind, so
+            # this keeps that existing invariant rather than changing it
+            # as a side effect of this fix.
+            if hit is not None and hit[0] == e.source_id:
+                hit = None
+            if hit is not None:
+                cid, confidence, reasoning = hit
+                resolved.append(FunctionEdge(
+                    type=e.type,
+                    relationship=e.relationship,
+                    source_id=e.source_id,
+                    target_id=cid,
+                    adapter_metadata={
+                        **(e.adapter_metadata or {}),
+                        "resolution_confidence": confidence,
+                        "resolution_reasoning": reasoning,
+                    },
+                ))
         elif tgt.startswith("<module>::"):
             module_name = tgt.split("::", 1)[1]
             external_id = f"external::module::{module_name}"

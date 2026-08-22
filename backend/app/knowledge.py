@@ -354,10 +354,19 @@ _ADAPTER_PROVENANCE = {
 
 def edge_provenance(adapter_metadata: dict) -> Provenance:
     """Derive a Provenance record for an AST/structural function edge."""
-    adapter = (adapter_metadata or {}).get("adapter") or (adapter_metadata or {}).get("source", "")
+    adapter_metadata = adapter_metadata or {}
+    adapter = adapter_metadata.get("adapter") or adapter_metadata.get("source", "")
     src, conf, why = _ADAPTER_PROVENANCE.get(adapter, ("regex", 0.7, f"Extracted by {adapter or 'structural parser'}"))
-    # Python call edges to <symbol> targets are name-matched, so slightly less certain
-    if adapter == "python_ast" and adapter_metadata.get("callee"):
+    # Call edges resolved by graph_builder's tiered resolver (see
+    # _resolve_call_target) carry their own confidence/reasoning — a
+    # self.foo() resolved within its own class is far more certain than a
+    # bare foo() that happened to be uniquely named repo-wide, and both are
+    # more specific than the flat 0.9 this used to hardcode for every
+    # name-matched call regardless of how it was actually resolved.
+    if "resolution_confidence" in adapter_metadata:
+        conf = adapter_metadata["resolution_confidence"]
+        why = adapter_metadata.get("resolution_reasoning") or why
+    elif adapter == "python_ast" and adapter_metadata.get("callee"):
         conf = 0.9
         why = "AST call site, resolved by name matching"
     return Provenance(source=src, confidence=conf, reasoning=why)

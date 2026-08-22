@@ -92,10 +92,20 @@ def _has_fn(name: str, file_path: str, fn_by_id: Dict[str, FunctionNode]) -> boo
 
 
 def _fn_id(name: str, file_path: str, fn_by_id: Dict[str, FunctionNode]) -> str | None:
-    for n in fn_by_id.values():
-        if n.name == name and n.file_path == file_path:
+    """Find a node by (name, file_path). Every _calls() assertion in this
+    suite targets a module-level function, so when a name collides with a
+    same-named method in the same file (e.g. llm_provider.py has both a
+    module-level `interpret_query` and two class methods called
+    `interpret_query`), prefer the function — matching what the caller
+    actually intended to assert about. Falls back to any match so this
+    stays permissive for names that don't collide."""
+    candidates = [n for n in fn_by_id.values() if n.name == name and n.file_path == file_path]
+    if not candidates:
+        return None
+    for n in candidates:
+        if n.type == "function":
             return n.id
-    return None
+    return candidates[0].id
 
 
 def _calls(caller_name: str, caller_file: str,
@@ -367,6 +377,33 @@ class TestPayloadInvariants:
     def test_every_node_has_name(self, fn_by_id):
         unnamed = [n.id for n in fn_by_id.values() if not n.name]
         assert not unnamed, f"Nodes with empty name: {unnamed[:10]}"
+
+    def test_no_same_name_call_fanout(self, fn_by_id, calls_edges):
+        """Regression guard: call-edge resolution used to fall back to
+        wiring a caller to EVERY node sharing its callee's short name (e.g.
+        every same-named __init__ across unrelated classes "called" every
+        other one). Assert that never happens again: for any group of 3+
+        nodes sharing a name, no single node calls every other node in
+        that group — a real repo's methods don't form a complete clique
+        just because they share a name.
+        """
+        by_name: Dict[str, List[str]] = {}
+        for n in fn_by_id.values():
+            by_name.setdefault(n.name, []).append(n.id)
+
+        adj: Dict[str, Set[str]] = {}
+        for src, tgt in calls_edges:
+            adj.setdefault(src, set()).add(tgt)
+
+        offenders = []
+        for name, ids in by_name.items():
+            if len(ids) < 3:
+                continue  # a clique of 2 (mutual call) is common and legitimate
+            group = set(ids)
+            for nid in ids:
+                if len(adj.get(nid, set()) & group) == len(group) - 1:
+                    offenders.append((name, nid))
+        assert not offenders, f"Complete same-name fan-out detected: {offenders[:5]}"
 
     def test_backend_has_substantial_nodes(self, payload: GraphPayload):
         """Sanity check: Flowify's own backend must produce a non-trivial graph."""
