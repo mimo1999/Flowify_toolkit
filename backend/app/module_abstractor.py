@@ -14,6 +14,7 @@ Depth handling:
 The /graph endpoint exposes nodes for the requested depth and collapses deeper ones.
 """
 from __future__ import annotations
+import os
 from collections import defaultdict
 from pathlib import PurePosixPath
 from typing import Dict, List, Tuple
@@ -24,6 +25,16 @@ from networkx.algorithms.community import greedy_modularity_communities
 
 from .models import ModuleNode, ModuleEdge, FunctionNode, FunctionEdge
 from . import bob_client, control_flow_analyzer
+
+# greedy_modularity_communities is the one genuinely expensive step in this
+# pipeline — it OOM'd a 512 MB container on a 2275-node call graph (measured:
+# every other stage, including parsing that same repo, ran in well under a
+# second). Above this many nodes in one connected component, skip it and
+# group directly by directory instead: modularity's own output gets merged
+# back into same-directory clusters immediately below anyway (see the
+# comment in _cluster), so this produces the same shape for a fraction of
+# the cost rather than refusing to ingest the repo at all.
+_MODULARITY_NODE_LIMIT = int(os.environ.get("FLOWIFY_MODULARITY_LIMIT", "800"))
 
 
 def _is_code_symbol(data: dict) -> bool:
@@ -49,6 +60,14 @@ def _cluster(fg: nx.DiGraph) -> List[List[str]]:
         sub = undirected.subgraph(comp)
         if sub.number_of_nodes() <= 4:
             clusters.append(list(comp))
+            continue
+        if sub.number_of_nodes() > _MODULARITY_NODE_LIMIT:
+            # Group by directory directly instead of running modularity —
+            # see _MODULARITY_NODE_LIMIT above.
+            by_dir: Dict[str, List[str]] = defaultdict(list)
+            for nid in comp:
+                by_dir[_name_hint([nid], fg)].append(nid)
+            clusters.extend(by_dir.values())
             continue
         try:
             communities = greedy_modularity_communities(sub)

@@ -246,12 +246,16 @@ _ALLOWED_ROOTS = [
     if p.strip()
 ]
 
-# Server-mode-only cap on parsed node count (see _do_ingest). 800 matches
-# graph_analytics.py's own _BETWEENNESS_EXACT_LIMIT — already this
-# codebase's established line for "big enough that exact graph algorithms
-# get expensive" — and sits safely below the ~2275-node repo that OOM'd a
-# 512 MB free-tier container.
-_MAX_INGEST_NODES = int(os.environ.get("FLOWIFY_MAX_NODES", "800"))
+# Server-mode-only backstop on parsed node count (see _do_ingest). This is
+# NOT the primary defense against a large repo anymore — the actual thing
+# that OOM'd a 512 MB container on a 2275-node repo was NetworkX community
+# detection in module_abstractor.py, which now falls back to cheap
+# directory-based grouping above FLOWIFY_MODULARITY_LIMIT (default 800)
+# instead of running at all. Every other stage measured well under a
+# second on that same repo, so this is a generous, rarely-hit ceiling
+# against genuinely pathological input (a five-figure-file monorepo),
+# not a limit real repos are expected to bump into.
+_MAX_INGEST_NODES = int(os.environ.get("FLOWIFY_MAX_NODES", "20000"))
 
 
 def _validate_local_path(repo_path: str) -> str:
