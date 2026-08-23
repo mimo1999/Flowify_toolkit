@@ -107,6 +107,12 @@ export const useFlowStore = create((set, get) => ({
   // "Showing N of M" banner so a capped view is disclosed, not silent.
   nodeBudget: null,
 
+  // Onboarding modal — shown once per browser (see WelcomeModal.jsx), and
+  // reopenable anytime via the sidebar's "?" button.
+  helpOpen: false,
+  openHelp: () => set({ helpOpen: true }),
+  closeHelp: () => set({ helpOpen: false }),
+
   // Repository flow summary (generated at ingest, served by /flow_summary)
   flowSummary: null,
   flowSummaryLoading: false,

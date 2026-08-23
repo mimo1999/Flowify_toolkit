@@ -7,6 +7,7 @@ import QueryResults from "./components/QueryResults.jsx";
 import ImpactPanel from "./components/ImpactPanel.jsx";
 import SummaryPanel from "./components/SummaryPanel.jsx";
 import InsightsPanel from "./components/InsightsPanel.jsx";
+import WelcomeModal from "./components/WelcomeModal.jsx";
 import { useFlowStore } from "./store.js";
 
 export default function App() {
@@ -57,6 +58,8 @@ export default function App() {
       <SummaryPanel />
       {/* Graph insights modal */}
       <InsightsPanel />
+      {/* First-visit onboarding modal (reopenable via the sidebar's "?" button) */}
+      <WelcomeModal />
     </div>
   );
 }

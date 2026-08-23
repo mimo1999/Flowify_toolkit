@@ -212,7 +212,7 @@ export default function Sidebar() {
     nodes, expanded, viewHistory,
     goBack, resetView,
     exportGraph, exportStatus,
-    serverStopped, openSummary, openInsights, downloadReport,
+    serverStopped, openSummary, openInsights, downloadReport, openHelp,
   } = useFlowStore();
   const config = useServerConfig();
   const serverMode = config?.server_mode ?? false;
@@ -239,10 +239,17 @@ export default function Sidebar() {
               <line x1="12" y1="15" x2="19" y2="19" stroke="white" strokeWidth="1.5"/>
             </svg>
           </div>
-          <div>
+          <div className="min-w-0 flex-1">
             <div className="font-semibold text-white text-sm leading-tight">Flowify AI</div>
             <div className="text-[10px] text-slate-500">Code graph explorer</div>
           </div>
+          <button
+            onClick={openHelp}
+            title="What is this? How do I use it?"
+            className="shrink-0 w-6 h-6 rounded-full flex items-center justify-center text-[11px] font-semibold text-slate-400 border border-[#1e2d4a] hover:text-slate-100 hover:border-blue-600 hover:bg-blue-950/40 transition-colors"
+          >
+            ?
+          </button>
         </div>
         <div className="mt-3">
           <ProviderBadge />
