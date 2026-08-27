@@ -62,7 +62,10 @@ def _is_stub_response(text: str) -> bool:
     """Return True if *text* is a heuristic stub or provider error — not worth caching."""
     return text.startswith("(stub)") or any(
         marker in text
-        for marker in ("[llm error:", "[ollama error:", "[bob error:", "[openai error:", "[claude error:")
+        for marker in (
+            "[llm error:", "[ollama error:", "[bob error:", "[openai error:", "[claude error:",
+            "[llm unavailable",
+        )
     )
 
 
@@ -367,8 +370,12 @@ class LLMProvider(ABC):
             out = self._call(prompt)
         except Exception as exc:
             # Provider unavailable — return heuristic stub but do NOT cache so
-            # the next call will try the live LLM again.
-            return HeuristicProvider()._call(prompt) + f"\n[llm error: {exc}]"
+            # the next call will try the live LLM again. The exception detail
+            # (upstream status/URL, occasionally response body) is logged
+            # server-side only — it has no business reaching a user-visible
+            # query/summary response, so the fallback text stays generic.
+            print(f"[llm error] {type(self).__name__}: {exc}")
+            return HeuristicProvider()._call(prompt) + "\n[llm unavailable — showing a heuristic answer]"
         _cache_put(prompt, out, ns)  # _cache_put silently skips stubs/errors
         return out
 
