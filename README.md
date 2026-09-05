@@ -14,8 +14,9 @@ Flowify ingests a codebase through three phases (repo context → AST/semantic e
 - **Per-node descriptions** — every node shows a one-line description of what that function/class/module does, derived from its docstring or code via AST analysis (or an LLM when one is configured).
 - **Semantic edge types** — edges are colour-coded: blue = CALLS, green = EXPOSES_API, purple = USES_DB, yellow = EMITS_EVENT, red = CONSUMES_EVENT.
 - **Change Impact analysis** — click any function to see its risk level (low/medium/high/critical), caller list, DB operations it touches, and affected modules.
-- **Graph-grounded NLP queries** — ask questions in plain English; answers are anchored to real graph traversal with a "Grounded in N nodes" badge, numbered call-chain steps, and 👍/😐/👎 feedback.
+- **Graph-grounded NLP queries** — ask questions in plain English; answers are anchored to real graph traversal with a "Grounded in N nodes" badge, numbered call-chain steps, and 👍/😐/👎 feedback. Call edges are resolved through a scoped, confidence-ranked matcher (self-call → attribute type → receiver class → module import → same-file → unique-repo-wide), not simple name matching — an ambiguous call is dropped rather than guessed, so the cited call chain reflects edges that actually exist.
 - **Continuous learning** — query patterns and feedback adjust relevance scores and build a terminology map over time.
+- **Scales to large repos** — viewport culling, memoized nodes, and hover handling that only touches the nodes it affects keep the graph view responsive well past a thousand nodes; a whole-repo view is capped at 600 rendered nodes (highest-degree kept) with an on-screen "Showing N of M" banner instead of silently truncating or freezing the tab.
 
 ---
 
@@ -88,6 +89,23 @@ OLLAMA_HOST=http://localhost:11434   # default
 OLLAMA_MODEL=codellama               # force a specific model
 ```
 
+### Ollama Cloud
+
+Point `OLLAMA_HOST` at `https://ollama.com` and set `OLLAMA_API_KEY` to use Ollama's hosted models instead of a local install — this is what the live demo runs. `OLLAMA_MODEL` is required in this mode (there's no local "installed models" list to auto-pick from).
+
+### Bring your own key (BYO)
+
+A hosted instance can run with **no server-side LLM key at all** (`LLM_PROVIDER=heuristic`) while still giving each visitor real LLM answers if they supply their own. Any request carrying an `X-Flowify-Provider` header gets that provider for every LLM call made while handling it — ingest, query, module summaries — via headers only, no server restart or config change:
+
+| Header | Purpose |
+|---|---|
+| `X-Flowify-Provider` | `ollama` \| `anthropic` \| `openai` (required to opt in) |
+| `X-Flowify-Api-Key` | Your key for that provider |
+| `X-Flowify-Model` | Optional model override |
+| `X-Flowify-Base-Url` | Optional endpoint override (self-hosted Ollama, OpenAI-compatible proxy, etc.) |
+
+The key lives only in that request's context and is never logged or persisted. Note: on the hosted demo, **ingestion always uses the deterministic heuristic provider regardless of this header** — a single ingest can make dozens-to-hundreds of LLM calls, which would blow through a per-visitor key's rate limits fast; BYO keys apply to query and flow-summary generation, the two per-visitor (not per-repo) LLM touchpoints.
+
 ### All providers
 
 | `LLM_PROVIDER` value | Provider | Required env var(s) |
@@ -112,8 +130,9 @@ All provider responses are cached to `_store/llm_cache/` keyed by SHA256 of the 
 | Variable | Default | Purpose |
 |---|---|---|
 | `LLM_PROVIDER` | *(auto-detect)* | Provider selection (see table above) |
-| `OLLAMA_HOST` | `http://localhost:11434` | Ollama server URL |
-| `OLLAMA_MODEL` | *(auto-pick best installed)* | Force a specific Ollama model |
+| `OLLAMA_HOST` | `http://localhost:11434` | Ollama server URL (`https://ollama.com` for Cloud) |
+| `OLLAMA_MODEL` | *(auto-pick best installed)* | Force a specific Ollama model (required for Cloud) |
+| `OLLAMA_API_KEY` | *(unset)* | Ollama Cloud API key, sent as `Authorization: Bearer` |
 | `BOB_API_KEY` | *(unset)* | IBM Bob / watsonx API key |
 | `BOB_API_URL` | IBM endpoint | IBM Bob API URL |
 | `ANTHROPIC_API_KEY` | *(unset)* | Anthropic Claude API key |
@@ -128,10 +147,13 @@ All provider responses are cached to `_store/llm_cache/` keyed by SHA256 of the 
 | `FLOWIFY_FRONTEND_DIST` | *(unset)* | Path to a built `frontend/dist`; if set, the backend serves it at `/` |
 | `FLOWIFY_ALLOWED_ROOTS` | *(unset)* | `server` mode only: `os.pathsep`-separated local paths ingest is allowed to read |
 | `FLOWIFY_WORKDIR` | system temp dir | Where git-URL clones are made before ingest, then deleted |
-| `FLOWIFY_MAX_CLONE_MB` | `100` | Reject a git-URL clone larger than this |
+| `FLOWIFY_MAX_CLONE_MB` | `100` | Reject a git-URL clone larger than this (clones are shallow, `depth=1`, regardless) |
 | `FLOWIFY_CORS_ORIGINS` | `*` | Comma-separated allowed origins |
 | `FLOWIFY_GRAPH_TTL_H` | `24` | `server` mode only: delete graphs older than this many hours |
 | `FLOWIFY_RATE_LIMIT_PER_MIN` | `6` | `server` mode only: per-IP cap on ingest/query calls |
+| `FLOWIFY_LLM_CALLS_PER_DAY` | `300` | `server` mode only: global daily cap on query/flow-summary LLM calls — protects a shared server-side key from being drained by many visitors; returns 429 once hit |
+| `FLOWIFY_MODULARITY_LIMIT` | `800` | Above this many code-symbol nodes in one connected component, module clustering skips community detection and groups by directory instead (much cheaper, avoids OOM on large repos) |
+| `FLOWIFY_MAX_NODES` | `20000` | `server` mode only: hard reject a repo above this many parsed nodes — a rare backstop, not the primary large-repo defense (that's the modularity limit above) |
 
 ---
 
@@ -163,6 +185,13 @@ The same codebase runs four ways — see [Dockerfile](Dockerfile) and
   docker build -t flowify .
   docker run -p 7860:7860 -e FLOWIFY_MODE=server flowify
   ```
+  The image installs plain `uvicorn` (not `uvicorn[standard]`) since this
+  app runs a single worker with no websocket routes and no `--reload` in
+  the container — the extras (`uvloop`, `httptools`, `websockets`,
+  `watchfiles`, `python-dotenv`, `pyyaml`) would just add dead weight.
+  This trims what gets pulled/started on a cold container, but it doesn't
+  remove Render free tier's 15-minute idle spin-down — that ~30-60s cold
+  start on the next request is a platform behavior, not an image-size one.
 - **Local, one command** — the same image, pointed at your own folder,
   with `/shutdown` enabled and no session scoping:
   ```bash
@@ -253,6 +282,17 @@ and the built frontend use. See the router-mounting comment at the top of
 | `GET` | `/hot_nodes?graph_id=&limit=10` | Most-queried functions |
 | `GET` | `/module_details?graph_id=&module_id=` | Module with control-flow groups |
 
+### Knowledge & analytics endpoints (deterministic, zero LLM calls)
+
+| Method | Path | Returns |
+|---|---|---|
+| `GET` | `/knowledge/{graph_id}` | Docs (README/ADR/RFC/wikis) as nodes, linked to the code they reference, each edge with provenance (source/confidence/evidence) |
+| `GET` | `/node_references?graph_id=&node_id=` | Everything the knowledge layer knows about one node — referencing docs, TODO/FIXME/HACK/WHY rationale in its source span, call-edge provenance |
+| `GET` | `/graph_analytics/{graph_id}?refresh=` | Centrality metrics, god nodes, cycles, articulation-point bridges, dead-code candidates, surprising cross-module couplings |
+| `GET` | `/architecture_report/{graph_id}?format=markdown\|json` | The full GRAPH_REPORT.md architecture report |
+
+All four auto-build their metadata on demand for graphs ingested before the feature existed, and are cached at ingest time otherwise.
+
 ### MCP endpoints (for LLM assistants)
 
 | Method | Path | Notes |
@@ -260,6 +300,13 @@ and the built frontend use. See the router-mounting comment at the top of
 | `POST` | `/mcp/ingest` | Idempotent; returns stable `repo_id` from SHA256 of path |
 | `POST` | `/mcp/query` | Structured function list + execution path |
 | `POST` | `/bob/graph` | Full Bob-ready graph payload (CLI / agent use) |
+| `GET` | `/mcp/find_node?graph_id=&name=` | Find code nodes by (partial) name, with summaries |
+| `GET` | `/mcp/shortest_path?graph_id=&source=&target=` | Shortest call path between two functions, addressed by name |
+| `GET` | `/mcp/search_rationale?graph_id=&query=&marker=` | Search extracted TODO/FIXME/HACK/WHY/NOTE comments |
+| `GET` | `/mcp/dead_code?graph_id=` | Functions with zero inbound call edges (candidates — dynamic dispatch can false-positive) |
+| `GET` | `/mcp/hotspots?graph_id=` | God nodes, critical bridges, high-risk components |
+| `GET` | `/mcp/cycles?graph_id=` | Circular dependencies and surprising cross-module couplings |
+| `GET` | `/mcp/architectural_summary?graph_id=` | The architecture report as Markdown, for agent consumption |
 
 ---
 
