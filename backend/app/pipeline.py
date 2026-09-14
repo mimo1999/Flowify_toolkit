@@ -7,7 +7,8 @@ from typing import Dict, List
 
 import networkx as nx
 
-from . import llm_provider as bob_client, storage, graph_builder, module_abstractor, git_updater, llm_ingestion, learning, knowledge, graph_analytics
+from . import llm_provider as bob_client, storage, graph_builder, ingestion, module_abstractor, git_updater, llm_ingestion, learning, knowledge, graph_analytics
+from .errors import RepoLimitError, RepoSourceTooLargeError, RepoTooLargeError, RepoTooSlowError
 from .models import (
     GraphPayload, FunctionNode, RepositoryContext, SemanticMetadata, SemanticEdge,
     FlowSummary, FlowStep, ModuleNode, ModuleEdge,
@@ -15,24 +16,6 @@ from .models import (
 
 
 _CRITICALITY_RANK = {"critical": 3, "high": 2, "medium": 1, "low": 0}
-
-
-class RepoTooLargeError(ValueError):
-    """Raised when a repo's parsed node count exceeds the caller's max_nodes.
-
-    Deliberately a ValueError subclass, not a bare exception: callers that
-    don't pass max_nodes never see this (the check is skipped entirely), so
-    existing behavior for local/MCP callers is unchanged.
-    """
-
-    def __init__(self, node_count: int, max_nodes: int):
-        self.node_count = node_count
-        self.max_nodes = max_nodes
-        super().__init__(
-            f"repo has {node_count} parseable nodes, exceeding the {max_nodes}-node limit "
-            f"for this deployment — ingest it locally instead (see the README's Deployment "
-            f"section) or run against a smaller subset of the repo"
-        )
 
 
 def _is_callable(node: FunctionNode) -> bool:
@@ -415,12 +398,32 @@ def _build_flow_summary(
     )
 
 
-def ingest(repo_path: str, max_nodes: int | None = None) -> GraphPayload:
-    """Ingest *repo_path*. If max_nodes is given, aborts with RepoTooLargeError
-    right after parsing — before the memory-heavy stages (module clustering,
-    community detection, analytics) run — rather than letting a large repo
-    exhaust a memory-constrained host. Unset for local/MCP callers, whose
-    resources are their own to spend; server mode sets it (see main.py)."""
+def ingest(
+    repo_path: str,
+    max_nodes: int | None = None,
+    max_source_bytes: int | None = None,
+    max_parse_seconds: float | None = None,
+) -> GraphPayload:
+    """Ingest *repo_path*.
+
+    Three independent guards, all unset for local/MCP callers (whose
+    resources are their own to spend) and all set by server mode (see
+    main.py):
+
+    - max_source_bytes: a fast-fail check before any parsing starts (a
+      plain directory walk + stat, ~0.1s even on a 5,000-file repo) —
+      rejects a pathologically large repo before spending any real work on it.
+    - max_nodes / max_parse_seconds: forwarded into
+      graph_builder.build_function_graph, which checks both after every file
+      during the parse loop and raises RepoTooLargeError/RepoTooSlowError —
+      catching repos that are small in bytes but dense in nodes, or just slow
+      to parse, before the memory-heavy stages (module clustering, community
+      detection, analytics) run.
+    """
+    if max_source_bytes is not None:
+        total_bytes, file_count = ingestion.estimate_source_size(repo_path)
+        if total_bytes > max_source_bytes:
+            raise RepoSourceTooLargeError(total_bytes, max_source_bytes, file_count)
     # Ingestion (repo-context analysis, per-function/module enrichment, and
     # the big llm_ingestion pass) is forced onto the heuristic provider,
     # regardless of what LLM_PROVIDER/BYO-key is configured for the rest of
@@ -447,16 +450,14 @@ def ingest(repo_path: str, max_nodes: int | None = None) -> GraphPayload:
         print(f"  - Confidence: {repo_context.confidence:.2f}")
         print(f"  - Fallback used: {repo_context.fallback_used}")
 
-        # Build function graph with context awareness
-        g, function_nodes, function_edges = graph_builder.build_function_graph(repo_path)
-
-        if max_nodes is not None and len(function_nodes) > max_nodes:
-            # A repo's *file count* is a poor proxy for the memory this
-            # pipeline needs — click's 79 files parse into 2275 nodes and
-            # 18721 edges, which OOM'd a 512 MB container during module
-            # clustering. Check the real cost driver (parsed node count)
-            # before spending any more memory on it.
-            raise RepoTooLargeError(len(function_nodes), max_nodes)
+        # Build function graph with context awareness. max_nodes/max_seconds
+        # are enforced inside the parse loop itself (see build_function_graph's
+        # docstring) rather than checked once here after the fact, so a large
+        # repo is rejected as soon as the budget is hit instead of after
+        # spending the memory to fully parse it.
+        g, function_nodes, function_edges = graph_builder.build_function_graph(
+            repo_path, max_nodes=max_nodes, max_seconds=max_parse_seconds,
+        )
 
         # Phase 2: combined summary + semantic analysis (batched, one pass)
         semantic_edges = _enrich_functions(function_nodes, g, repo_context)

@@ -25,11 +25,11 @@ from . import (
     bob_export, pipeline, storage, retrieval, module_abstractor, learning,
     knowledge as knowledge_mod, graph_analytics, report as report_mod,
 )
-# Imported directly (not via the `pipeline` module reference above) so it
+# Imported from .errors, not via the `pipeline` module reference above, so it
 # stays a real exception class in tests that mock out app.main.pipeline
-# wholesale — `pipeline.RepoTooLargeError` would otherwise resolve to a
+# wholesale — `pipeline.RepoLimitError` would otherwise resolve to a
 # MagicMock attribute, which `except` can't catch.
-from .pipeline import RepoTooLargeError
+from .errors import RepoLimitError
 from .models import (
     BobGraphRequest, IngestRequest, UpdateRequest, QueryRequest, QueryResponse,
     FeedbackRequest, MCPIngestResponse, MCPQueryResponse,
@@ -257,6 +257,22 @@ _ALLOWED_ROOTS = [
 # not a limit real repos are expected to bump into.
 _MAX_INGEST_NODES = int(os.environ.get("FLOWIFY_MAX_NODES", "20000"))
 
+# Fast-fail guard, checked before any parsing starts (see pipeline.ingest's
+# docstring). Default derived from local measurement: vLLM (410MB / 4,785
+# files) reached a 2.2GB RSS high-water mark parsing alone — nowhere near
+# ingestable in 512MB — while click (a few MB / 79 files) parsed fine. 150MB
+# sits well under vLLM and comfortably above real single-project repos;
+# calibrate down after running the ladder against the live Render instance
+# (see the plan's Verification section) rather than treating this as final.
+_MAX_SOURCE_BYTES = int(os.environ.get("FLOWIFY_MAX_SOURCE_BYTES", str(150 * 1024 * 1024)))
+
+# Running wall-clock budget, checked after every file during the parse loop.
+# CPU is the binding constraint on Render's free 0.1 CPU well before memory
+# is — this catches a repo that's dense-but-small in bytes/nodes but just
+# slow to parse, and bounds worst-case ingest time against typical HTTP
+# gateway timeouts.
+_MAX_PARSE_SECONDS = float(os.environ.get("FLOWIFY_MAX_PARSE_SECONDS", "60"))
+
 
 def _validate_local_path(repo_path: str) -> str:
     """In server mode, resolve *repo_path* and reject anything that doesn't
@@ -306,28 +322,50 @@ def _do_ingest(req: IngestRequest):
     # the memory-heavy downstream stages run. Unset in local mode: that's
     # your own machine's resources to spend.
     max_nodes = _MAX_INGEST_NODES if IS_SERVER_MODE else None
+    max_source_bytes = _MAX_SOURCE_BYTES if IS_SERVER_MODE else None
+    max_parse_seconds = _MAX_PARSE_SECONDS if IS_SERVER_MODE else None
 
     try:
         if req.repo_url:
             try:
                 display_path = cloner.validate_repo_url(req.repo_url)
                 with cloner.clone_to_temp(req.repo_url) as local_path:
-                    payload = pipeline.ingest(str(local_path), max_nodes=max_nodes)
+                    payload = pipeline.ingest(
+                        str(local_path), max_nodes=max_nodes,
+                        max_source_bytes=max_source_bytes, max_parse_seconds=max_parse_seconds,
+                    )
             except cloner.InvalidRepoUrl as e:
                 raise HTTPException(status_code=400, detail=str(e)) from e
             storage.set_repo_path(payload.graph_id, display_path)
             payload.repo_path = display_path
         elif req.repo_path:
             resolved = _validate_local_path(req.repo_path)
-            payload = pipeline.ingest(resolved, max_nodes=max_nodes)
+            payload = pipeline.ingest(
+                resolved, max_nodes=max_nodes,
+                max_source_bytes=max_source_bytes, max_parse_seconds=max_parse_seconds,
+            )
         else:
             raise HTTPException(status_code=400, detail="repo_path or repo_url is required")
-    except RepoTooLargeError as e:
+    except RepoLimitError as e:
         raise HTTPException(status_code=413, detail=str(e)) from e
 
     if owner:
         storage.set_owner(payload.graph_id, owner)
     return payload
+
+
+@api.get("/limits")
+def get_limits():
+    """Active ingest thresholds, so the UI can warn before a user submits a
+    URL rather than letting them wait through a rejection. Values are ``null``
+    outside server mode, where ingest is unbounded (see pipeline.ingest)."""
+    return {
+        "server_mode": IS_SERVER_MODE,
+        "max_source_bytes": _MAX_SOURCE_BYTES if IS_SERVER_MODE else None,
+        "max_nodes": _MAX_INGEST_NODES if IS_SERVER_MODE else None,
+        "max_parse_seconds": _MAX_PARSE_SECONDS if IS_SERVER_MODE else None,
+        "max_clone_mb": int(os.environ.get("FLOWIFY_MAX_CLONE_MB", "100")),
+    }
 
 
 @api.post("/ingest_repo")
@@ -446,6 +484,8 @@ def build_graph_for_bob(req: BobGraphRequest):
             include_view=req.include_view,
             include_llm_ingestion=req.include_llm_ingestion,
             max_nodes=_MAX_INGEST_NODES if IS_SERVER_MODE else None,
+            max_source_bytes=_MAX_SOURCE_BYTES if IS_SERVER_MODE else None,
+            max_parse_seconds=_MAX_PARSE_SECONDS if IS_SERVER_MODE else None,
         )
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc

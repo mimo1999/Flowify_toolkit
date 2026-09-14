@@ -10,11 +10,13 @@ import ast
 import logging
 import os
 import re
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 import networkx as nx
 
+from .errors import RepoTooLargeError, RepoTooSlowError
 from .ingestion import detect_language, iter_source_files
 from .models import CIRSignature, CIRSourceSpan, FunctionNode, FunctionEdge
 
@@ -863,14 +865,31 @@ def _resolve_call_target(
     return None
 
 
-def build_function_graph(repo_path: str) -> Tuple[nx.DiGraph, List[FunctionNode], List[FunctionEdge]]:
+def build_function_graph(
+    repo_path: str,
+    max_nodes: int | None = None,
+    max_seconds: float | None = None,
+) -> Tuple[nx.DiGraph, List[FunctionNode], List[FunctionEdge]]:
+    """Parse every source file into CIR nodes/edges and resolve call targets.
+
+    max_nodes/max_seconds, when set, are checked after every file during the
+    parse loop (not just once at the end) — an exact, measured budget rather
+    than an estimate, so a repo that's dense-but-small in byte terms still
+    gets caught before the expensive downstream stages run. Unset for
+    local/MCP callers; server mode sets both (see main.py).
+    """
     repo_root = Path(repo_path).resolve()
     all_nodes: List[FunctionNode] = []
     all_edges: List[FunctionEdge] = []
+    t0 = time.time()
     for fp in iter_source_files(repo_path):
         nodes, edges = parse_file(fp, repo_root)
         all_nodes.extend(nodes)
         all_edges.extend(edges)
+        if max_nodes is not None and len(all_nodes) > max_nodes:
+            raise RepoTooLargeError(len(all_nodes), max_nodes)
+        if max_seconds is not None and (time.time() - t0) > max_seconds:
+            raise RepoTooSlowError(time.time() - t0, max_seconds)
 
     _dedupe_node_ids(all_nodes)
 
