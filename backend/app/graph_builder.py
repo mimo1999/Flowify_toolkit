@@ -967,6 +967,11 @@ def build_function_graph(repo_path: str) -> Tuple[nx.DiGraph, List[FunctionNode]
             resolved.append(e)
 
     all_nodes.extend(external_nodes.values())
+    # Every edge worth keeping is now referenced by `resolved` (either the same
+    # object, for already-resolved targets, or a new one). Dropping the original
+    # list releases the unresolved `<symbol>::` edges, which on a large repo are
+    # the majority of what was parsed.
+    all_edges.clear()
 
     # Optional pyan augmentation — enabled by FLOWIFY_PYTHON_EDGE_BACKEND=pyan
     if os.environ.get("FLOWIFY_PYTHON_EDGE_BACKEND", "ast").lower() == "pyan":
@@ -987,18 +992,40 @@ def build_function_graph(repo_path: str) -> Tuple[nx.DiGraph, List[FunctionNode]
 
     # Deduplicate edges: the regex extractor fires once per call-site occurrence,
     # so a function that calls foo() in two branches produces two identical edges.
+    # Compacted in place rather than built into a second list — on a large repo
+    # `resolved` is hundreds of thousands of objects and holding a full copy of
+    # it alongside the original is memory we don't have on a 512MB instance.
     seen_edge_keys: set = set()
-    deduped: List[FunctionEdge] = []
+    write_idx = 0
     for e in resolved:
         key = (e.source_id, e.target_id, e.type)
         if key not in seen_edge_keys:
             seen_edge_keys.add(key)
-            deduped.append(e)
-    resolved = deduped
+            resolved[write_idx] = e
+            write_idx += 1
+    del resolved[write_idx:]
+    seen_edge_keys.clear()
 
     g = nx.DiGraph()
     for n in all_nodes:
-        g.add_node(n.id, **n.model_dump())
+        # Only the attributes something actually reads, NOT the whole node.
+        # `**n.model_dump()` here used to duplicate every node as a plain dict
+        # on top of the Pydantic object it was copied from — measured as one of
+        # the largest single allocations during ingest.
+        #
+        # Readers: module_abstractor._is_code_symbol (kind/type), _name_hint
+        # (file_path), the cluster summary (summary/name) and submodule typing
+        # (intent); pipeline._callee_names (name). `intent`/`complexity`/
+        # `criticality` are absent here by design — Phase 2 enrichment writes
+        # them onto these nodes later (pipeline.py), and every read uses .get().
+        g.add_node(
+            n.id,
+            kind=n.kind,
+            type=n.type,
+            name=n.name,
+            file_path=n.file_path,
+            summary=n.summary,
+        )
     for e in resolved:
         if g.has_node(e.source_id) and g.has_node(e.target_id):
             g.add_edge(e.source_id, e.target_id, type=e.type, relationship=e.relationship)

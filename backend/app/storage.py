@@ -55,6 +55,12 @@ def _conn() -> sqlite3.Connection:
         db.execute("PRAGMA journal_mode=WAL")    # concurrent reads + single writer
         db.execute("PRAGMA synchronous=NORMAL")  # fsync on checkpoint, not every commit
         db.execute("PRAGMA foreign_keys=ON")
+        # Cap the page cache explicitly. SQLite's default is ~2MB per connection
+        # but it's negative-valued ("KiB") vs positive ("pages") and grows with
+        # use — and this process has a hard 512MB ceiling on the hosted tier,
+        # where page cache competes with the ingest working set for the same
+        # budget. Negative = KiB, so this is a firm 8MB per connection.
+        db.execute("PRAGMA cache_size=-8000")
         _init_schema(db)
         _local.db = db
     return _local.db
@@ -253,7 +259,10 @@ def save(payload: GraphPayload, owner: Optional[str] = None) -> None:
                 qualified_name, lineno, summary, semantics, adapter_metadata,
                 signature, source_span, code_snippet)
                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            [
+            # Generator, not a list: executemany consumes it lazily, so the
+            # serialized tuples (including the JSON blobs _j builds) never exist
+            # as a second full copy of the graph alongside the model objects.
+            (
                 (
                     n.id, gid, n.name, n.file_path, n.type, n.kind,
                     n.source_language, n.qualified_name, n.lineno, n.summary,
@@ -261,7 +270,7 @@ def save(payload: GraphPayload, owner: Optional[str] = None) -> None:
                     _j(n.signature), _j(n.source_span), n.code_snippet,
                 )
                 for n in payload.function_nodes
-            ],
+            ),
         )
 
         # edges
@@ -269,11 +278,11 @@ def save(payload: GraphPayload, owner: Optional[str] = None) -> None:
             """INSERT INTO edges
                (graph_id, source_id, target_id, type, relationship, adapter_meta)
                VALUES (?,?,?,?,?,?)""",
-            [
+            (
                 (gid, e.source_id, e.target_id, e.type, e.relationship,
                  _j(e.adapter_metadata))
                 for e in payload.function_edges
-            ],
+            ),
         )
 
         # module nodes
@@ -339,11 +348,14 @@ def _load_payload(graph_id: str, include_code: bool) -> Optional[GraphPayload]:
     if hdr is None:
         return None
 
-    # nodes — omit code_snippet column in light mode
+    # nodes — omit code_snippet column in light mode.
+    # Iterate the cursor rather than .fetchall(): fetchall materializes every
+    # sqlite3.Row *in addition to* the model objects built from them, so peak
+    # memory was holding two full copies of the graph at once.
     if include_code:
         node_rows = db.execute(
             "SELECT * FROM nodes WHERE graph_id=?", (graph_id,)
-        ).fetchall()
+        )
     else:
         node_rows = db.execute(
             """SELECT id, graph_id, name, file_path, type, kind, source_language,
@@ -351,13 +363,13 @@ def _load_payload(graph_id: str, include_code: bool) -> Optional[GraphPayload]:
                       signature, source_span, NULL AS code_snippet
                FROM nodes WHERE graph_id=?""",
             (graph_id,),
-        ).fetchall()
+        )
     function_nodes = [_row_to_node(r, include_code) for r in node_rows]
 
     # edges
     edge_rows = db.execute(
         "SELECT * FROM edges WHERE graph_id=?", (graph_id,)
-    ).fetchall()
+    )
     function_edges = [
         FunctionEdge(
             type=r["type"],
