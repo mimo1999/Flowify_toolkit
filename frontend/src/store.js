@@ -350,13 +350,6 @@ export const useFlowStore = create((set, get) => ({
     // ── expand ────────────────────────────────────────────────────────────────
     let nn = { ...nodes }, ne = { ...edges }, nexp = { ...expanded };
 
-    // Collapse siblings when expanding a root node
-    if (new Set(rootIds).has(nodeId)) {
-      for (const rid of rootIds) {
-        if (rid !== nodeId && nexp[rid]) removeSubtree(nn, ne, nexp, rid, true);
-      }
-    }
-
     // Choose action:
     //   file node  → show its functions directly (2-level hierarchy)
     //   everything else → show its callees (function → called functions)
@@ -390,12 +383,6 @@ export const useFlowStore = create((set, get) => ({
     if (!graphId || !nodes[nodeId]) return;
 
     let nn = { ...nodes }, ne = { ...edges }, nexp = { ...expanded };
-
-    if (new Set(rootIds).has(nodeId)) {
-      for (const rid of rootIds) {
-        if (rid !== nodeId && nexp[rid]) removeSubtree(nn, ne, nexp, rid, true);
-      }
-    }
 
     let frontier = [nodeId];
     const visitedThisOp = new Set();
