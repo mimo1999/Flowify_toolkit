@@ -3,10 +3,10 @@ from pathlib import Path
 
 sys.path.insert(0, "backend")
 
-from app.bob_export import build_bob_graph_response
+from app.agent_export import build_agent_graph_response
 
 
-def test_bob_graph_export_returns_generated_cir_graph(tmp_path: Path):
+def test_agent_graph_export_returns_generated_cir_graph(tmp_path: Path):
     (tmp_path / "main.py").write_text(
         "\n".join(
             [
@@ -20,12 +20,12 @@ def test_bob_graph_export_returns_generated_cir_graph(tmp_path: Path):
         encoding="utf-8",
     )
 
-    response = build_bob_graph_response(
+    response = build_agent_graph_response(
         str(tmp_path),
         include_llm_ingestion=False,
     )
 
-    assert response["schema_version"] == "bob.graph.v1"
+    assert response["schema_version"] == "flowify.graph.v1"
     assert response["graph_id"]
     assert response["cir_version"] == "cir.v1"
     assert response["stats"]["node_count"] >= 3

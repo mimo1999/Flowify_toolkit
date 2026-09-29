@@ -9,7 +9,7 @@ import time
 import networkx as nx
 
 from .models import GraphPayload, ExecutionStep
-from . import llm_provider as bob_client, learning
+from . import llm_provider, learning
 
 
 # ---------------------------------------------------------------------------
@@ -191,7 +191,7 @@ def _entry_nodes(g: nx.DiGraph, query: str, graph_id: str) -> List[str]:
 
     # ── 6. LLM re-ranks the shortlist ────────────────────────────────────────
     learned = learning.get_terminology_suggestions(graph_id, query)
-    chosen_names = bob_client.interpret_query(query, list(name_to_nids.keys()), context)
+    chosen_names = llm_provider.interpret_query(query, list(name_to_nids.keys()), context)
     for s in learned:
         if s not in chosen_names:
             chosen_names.append(s)
@@ -355,4 +355,4 @@ def explain(
 
     if not summaries:
         return "No relevant functions found in the graph for that query."
-    return bob_client.explain_flow_with_graph(query, summaries, edge_info, prior_turns)
+    return llm_provider.explain_flow_with_graph(query, summaries, edge_info, prior_turns)

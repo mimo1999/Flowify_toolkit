@@ -1,7 +1,7 @@
-"""CLI entrypoint for Bob/MCP graph generation.
+"""CLI entrypoint for agent/MCP graph generation.
 
 Usage:
-  python -m app.bob_graph_cli --repo-path /path/to/repo
+  python -m app.graph_cli --repo-path /path/to/repo
 """
 from __future__ import annotations
 
@@ -10,11 +10,11 @@ import contextlib
 import json
 import sys
 
-from .bob_export import build_bob_graph_response
+from .agent_export import build_agent_graph_response
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Generate a Flowify CIR graph for Bob.")
+    parser = argparse.ArgumentParser(description="Generate a Flowify CIR graph for AI agents.")
     parser.add_argument("--repo-path", required=True, help="Repository root to ingest.")
     parser.add_argument("--depth", type=int, default=3, choices=[1, 2, 3], help="Collapsed view depth.")
     parser.add_argument("--no-full-graph", action="store_true", help="Omit full GraphPayload from output.")
@@ -24,7 +24,7 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         with contextlib.redirect_stdout(sys.stderr):
-            response = build_bob_graph_response(
+            response = build_agent_graph_response(
                 args.repo_path,
                 depth=args.depth,
                 include_full_graph=not args.no_full_graph,

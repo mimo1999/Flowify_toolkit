@@ -401,4 +401,3 @@ def save_conversation(graph_id: str, conversation_id: str, turns: list) -> None:
     storage.store_meta(graph_id, f"conv_{conversation_id}", {"turns": turns[-3:]})
 
 
-# Made with Bob

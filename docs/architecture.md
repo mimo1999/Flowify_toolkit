@@ -1,8 +1,8 @@
-# Flowify AI — Enhanced Architecture with Bob Integration
+# Flowify AI — Enhanced Architecture with LLM Integration
 
 ## Overview
 
-Flowify is an intelligent code analysis platform that combines static analysis with IBM Bob's AI capabilities to provide deep insights into code repositories. The system features three-phase Bob integration for repository intelligence, semantic enrichment, and continuous learning.
+Flowify is an intelligent code analysis platform that combines static analysis with pluggable LLM capabilities to provide deep insights into code repositories. The system features three-phase LLM integration for repository intelligence, semantic enrichment, and continuous learning.
 
 ## Canonical Intermediate Representation
 
@@ -30,13 +30,13 @@ This phase intentionally extracts only shallow structure: files, classes/types, 
 
 ## System Layers
 
-| Layer | Module | Phase | Bob Integration |
+| Layer | Module | Phase | the LLM Integration |
 |-------|--------|-------|-----------------|
-| **Repository Intelligence** | `app/bob_client.py` | Phase 1 | Repository profiling |
+| **Repository Intelligence** | `app/llm_provider.py` | Phase 1 | Repository profiling |
 | Ingestion | `app/ingestion.py` | 1 | - |
 | Function graph | `app/graph_builder.py` | 2 | - |
-| **Semantic Analysis** | `app/bob_client.py` | Phase 2 | Function semantics |
-| Bob client | `app/bob_client.py` | 3 | Summarization |
+| **Semantic Analysis** | `app/llm_provider.py` | Phase 2 | Function semantics |
+| LLM provider layer | `app/llm_provider.py` | 3 | Summarization |
 | Module abstraction | `app/module_abstractor.py` | 4–5 | Module naming |
 | Git updates | `app/git_updater.py` | 6 | - |
 | Retrieval | `app/retrieval.py` | 7 | Query interpretation |
@@ -53,7 +53,7 @@ This phase intentionally extracts only shallow structure: files, classes/types, 
 │ PHASE 1: Repository Intelligence (Pre-Ingestion)                │
 └─────────────────────────────────────────────────────────────────┘
                               │
-    repo path ────────────────┼────► bob_client.analyze_repository()
+    repo path ────────────────┼────► llm_provider.analyze_repository()
                               │              │
                               │              ├─► Project type detection
                               │              ├─► Domain identification
@@ -72,11 +72,11 @@ This phase intentionally extracts only shallow structure: files, classes/types, 
                               │                        ├─► AST parsing
                               │                        └─► Syntactic edges
                               │
-                              ├──► bob_client.summarize_function()
+                              ├──► llm_provider.summarize_function()
                               │              │
                               │              └─► One-sentence summaries
                               │
-                              ├──► bob_client.analyze_function_semantics()
+                              ├──► llm_provider.analyze_function_semantics()
                               │              │
                               │              ├─► Intent classification
                               │              ├─► Complexity assessment
@@ -88,7 +88,7 @@ This phase intentionally extracts only shallow structure: files, classes/types, 
                               └──► module_abstractor
                                           │
                                           ├─► Community detection
-                                          └─► bob_client.summarize_module()
+                                          └─► llm_provider.summarize_module()
                                                       │
                                                       ▼
                                               storage (JSON)
@@ -127,14 +127,14 @@ This phase intentionally extracts only shallow structure: files, classes/types, 
 - **Edges**: `DEFINES`, `CALLS`, `IMPORTS`, `INHERITS`
 - **Resolution**: Heuristic name matching (call to `foo()` matches all functions named `foo`)
 
-### 2. Semantic Layer (Bob-enhanced)
+### 2. Semantic Layer (LLM-enhanced)
 - **Semantic metadata** — Intent, complexity, criticality, patterns, side effects
 - **Semantic edges**: `TRANSFORMS`, `VALIDATES`, `ORCHESTRATES`, `PERSISTS`, `RETRIEVES`, `CONFIGURES`, `HANDLES`, `DEPENDS_ON`, `PRODUCES`, `CONSUMES`
 - **Context-aware**: Uses repository context for better analysis
 
 ### 3. Module Layer (Clustered)
 - **Module graph** — Clusters via greedy modularity community detection
-- **Bob naming** — Semantic names and descriptions for each cluster
+- **LLM naming** — Semantic names and descriptions for each cluster
 - **Aggregated edges**: Cross-cluster `CALLS` → `FLOW`
 
 ### 4. Learning Layer (Adaptive)
@@ -143,11 +143,11 @@ This phase intentionally extracts only shallow structure: files, classes/types, 
 - **Terminology map** — Domain-specific term → function mappings
 - **Common paths** — Frequently traversed execution flows
 
-## Bob Integration Points
+## LLM Integration Points
 
 ### Phase 1: Repository Intelligence (Pre-Ingestion)
 
-**Function**: `bob_client.analyze_repository(repo_path)`
+**Function**: `llm_provider.analyze_repository(repo_path)`
 
 **Input**: Repository path
 
@@ -170,11 +170,11 @@ This phase intentionally extracts only shallow structure: files, classes/types, 
 }
 ```
 
-**Fallback**: Heuristic analysis (0.5 confidence) without Bob API
+**Fallback**: Heuristic analysis (0.5 confidence) without an LLM provider
 
 ### Phase 2: Semantic Enrichment (During Ingestion)
 
-**Function**: `bob_client.analyze_function_semantics(name, code, repo_context, neighbors)`
+**Function**: `llm_provider.analyze_function_semantics(name, code, repo_context, neighbors)`
 
 **Input**: Function details + repository context + call graph neighbors
 
@@ -241,7 +241,7 @@ This phase intentionally extracts only shallow structure: files, classes/types, 
 
 ### Core Endpoints
 - `POST /ingest_repo` — Ingest repository (all 3 phases)
-- `POST /bob/graph` — Ingest a repo root and return a Bob/MCP-ready CIR graph export
+- `POST /agent/graph` — Ingest a repo root and return a agent/MCP-ready CIR graph export
 - `GET /graph` — Get graph at specified depth
 - `POST /query` — Query with learning tracking
 - `POST /update` — Incremental update
@@ -274,7 +274,7 @@ This phase intentionally extracts only shallow structure: files, classes/types, 
 3. Drops nodes/edges from those files; re-parses them
 4. Re-resolves symbol references against merged node set
 5. **Phase 2**: Re-analyzes semantics for new/changed functions only
-6. Re-summarizes only new functions (Bob cache short-circuits the rest)
+6. Re-summarizes only new functions (the LLM cache short-circuits the rest)
 7. Re-clusters and re-emits module graph
 8. **Phase 3**: Merges learning data
 
@@ -291,18 +291,18 @@ _store/
 ├── <graph_id>.repo_context.json       # Phase 1: Repository analysis
 ├── <graph_id>.learning.json           # Phase 3: Learning insights
 ├── <graph_id>.git.json                # Git metadata
-└── bob_cache/
-    ├── <hash>.json                    # Cached Bob responses
+└── llm_cache/
+    ├── <hash>.json                    # Cached LLM responses
     └── semantic_cache/                # Semantic similarity cache
 ```
 
-## IBM Bob Integration Strategy
+## LLM Integration Strategy
 
 ### Dual Analysis Approach
 
-Every Bob integration point has a **heuristic fallback**:
+Every LLM integration point has a **heuristic fallback**:
 
-| Feature | With Bob API | Without Bob API |
+| Feature | With an LLM provider | Without an LLM provider |
 |---------|--------------|-----------------|
 | Repository analysis | High confidence (0.85) | Medium confidence (0.5) |
 | Semantic analysis | High confidence (0.8) | Medium confidence (0.4) |
@@ -311,29 +311,26 @@ Every Bob integration point has a **heuristic fallback**:
 
 ### Caching Strategy
 
-1. **Content-hash caching**: All Bob responses cached by prompt hash
+1. **Content-hash caching**: All the LLM responses cached by prompt hash
 2. **Semantic similarity**: Reuse responses for similar prompts (85% threshold)
 3. **In-memory cache**: LRU cache for session (1000 entries, 1hr TTL)
 
 ### Configuration
 
 ```bash
-# Required for Bob API
-export BOB_API_KEY="your-api-key"
 
 # Optional
-export BOB_API_URL="https://bob.ibm.com/api/v1/generate"
 export FLOWIFY_STORE="_store"  # Storage directory
 ```
 
-**Without BOB_API_KEY**: Pipeline works end-to-end with heuristic fallbacks
+**Without an LLM provider**: Pipeline works end-to-end with heuristic fallbacks
 
 ## Performance Characteristics
 
 | Metric | Impact | Notes |
 |--------|--------|-------|
 | Initial ingestion | +20-30% time | One-time semantic analysis |
-| Subsequent runs | ~Same | Bob responses cached |
+| Subsequent runs | ~Same | the LLM responses cached |
 | Query latency | +5% | Learning overhead minimal |
 | Cache hit rate | ~90% | After initial run |
 | API calls | -90% | With caching |
@@ -347,7 +344,7 @@ export FLOWIFY_STORE="_store"  # Storage directory
 - Continuous learning (query tracking, terminology, feedback)
 - Usage analytics (hot nodes, common paths)
 - Adaptive importance (criticality adjusts with usage)
-- Graceful fallbacks (works without Bob API)
+- Graceful fallbacks (works without an LLM provider)
 - Multi-layer caching
 - Incremental updates
 
@@ -375,4 +372,4 @@ All three phases validated and working:
 Run validation:
 ```bash
 cd backend
-python -c "from app import pipeline, bob_client, learning, models; print('All modules OK')"
+python -c "from app import pipeline, llm_provider, learning, models; print('All modules OK')"

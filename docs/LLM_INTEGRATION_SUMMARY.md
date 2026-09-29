@@ -1,8 +1,8 @@
-# Bob Integration - Complete Implementation Summary
+# LLM Integration - Complete Implementation Summary
 
 ## Executive Summary
 
-This document provides a comprehensive summary of the IBM Bob integration into the Flowify pipeline, including validation results, implementation details, and usage guidelines.
+This document provides a comprehensive summary of the LLM integration into the Flowify pipeline, including validation results, implementation details, and usage guidelines.
 
 **Status**: ✅ **All 3 Phases Fully Implemented and Validated**
 
@@ -41,7 +41,7 @@ This document provides a comprehensive summary of the IBM Bob integration into t
 # Module Import Test
 ✅ All modules import successfully
    - app.pipeline
-   - app.bob_client
+   - app.llm_provider
    - app.learning
    - app.models
 
@@ -57,7 +57,7 @@ This document provides a comprehensive summary of the IBM Bob integration into t
 
 # Phase 2 Validation
 ✅ 367 functions with semantic metadata (sample graph)
-✅ Semantic edges: 0 (expected - depends on Bob analysis)
+✅ Semantic edges: 0 (expected - depends on the LLM analysis)
 ✅ Intent, complexity, criticality populated
 
 # Phase 3 Validation
@@ -71,7 +71,7 @@ This document provides a comprehensive summary of the IBM Bob integration into t
 ```bash
 # Validate module imports
 cd backend
-python -c "from app import pipeline, bob_client, learning, models; print('All modules OK')"
+python -c "from app import pipeline, llm_provider, learning, models; print('All modules OK')"
 
 # Check graph storage
 python -c "from app import storage; print(f'Graphs: {len(storage.list_graphs())}')"
@@ -94,7 +94,7 @@ python -c "from app import learning; i = learning.load_learning_insights('85e268
 
 | Category | Count | Details |
 |----------|-------|---------|
-| **Files Modified** | 5 | models.py, bob_client.py, pipeline.py, retrieval.py, main.py |
+| **Files Modified** | 5 | models.py, llm_provider.py, pipeline.py, retrieval.py, main.py |
 | **Files Created** | 4 | learning.py, phase1_implementation.md, phase2_implementation.md, phase3_implementation.md |
 | **Total Lines Added** | ~2,500 | Code + documentation |
 | **New Functions** | 15+ | Repository analysis, semantic analysis, learning functions |
@@ -109,7 +109,7 @@ python -c "from app import learning; i = learning.load_learning_insights('85e268
 | `phase2_implementation.md` | 442 | Phase 2 guide with examples |
 | `phase3_implementation.md` | 598 | Phase 3 guide with examples |
 | `architecture.md` | 398 | Updated system architecture |
-| `BOB_INTEGRATION_SUMMARY.md` | This doc | Complete summary |
+| `LLM_INTEGRATION_SUMMARY.md` | This doc | Complete summary |
 | **Total** | **1,767+** | Comprehensive documentation |
 
 ---
@@ -126,7 +126,7 @@ python -c "from app import learning; i = learning.load_learning_insights('85e268
 - ✅ Architecture pattern recognition (7 patterns)
 - ✅ Tech stack discovery
 - ✅ Entry point identification
-- ✅ Heuristic fallback (works without Bob API)
+- ✅ Heuristic fallback (works without an LLM provider)
 
 **Data Model**: `RepositoryContext`
 
@@ -134,7 +134,7 @@ python -c "from app import learning; i = learning.load_learning_insights('85e268
 
 **Storage**: `<graph_id>.repo_context.json`
 
-**Confidence**: 0.85 (Bob) / 0.5 (heuristic)
+**Confidence**: 0.85 (LLM) / 0.5 (heuristic)
 
 ### Phase 2: Semantic Graph Enrichment
 
@@ -156,7 +156,7 @@ python -c "from app import learning; i = learning.load_learning_insights('85e268
 
 **Storage**: Embedded in `<graph_id>.json`
 
-**Confidence**: 0.8 (Bob) / 0.4 (heuristic)
+**Confidence**: 0.8 (LLM) / 0.4 (heuristic)
 
 ### Phase 3: Continuous Learning System
 
@@ -216,7 +216,7 @@ python -c "from app import learning; i = learning.load_learning_insights('85e268
 ```
 1. User: POST /ingest_repo {"repo_path": "/path/to/repo"}
    ↓
-2. Phase 1: bob_client.analyze_repository()
+2. Phase 1: llm_provider.analyze_repository()
    ├─ Reads: README, requirements.txt, package.json
    ├─ Analyzes: Directory structure, file patterns
    ├─ Detects: Project type, domain, architecture, tech stack
@@ -227,11 +227,11 @@ python -c "from app import learning; i = learning.load_learning_insights('85e268
    ├─ Creates: Function nodes, syntactic edges
    └─ Returns: NetworkX graph
    ↓
-4. Existing: bob_client.summarize_function() [per function]
+4. Existing: llm_provider.summarize_function() [per function]
    ├─ Input: Function name, code
    └─ Output: One-sentence summary
    ↓
-5. Phase 2: bob_client.analyze_function_semantics() [per function]
+5. Phase 2: llm_provider.analyze_function_semantics() [per function]
    ├─ Input: Function + repo_context + neighbors
    ├─ Analyzes: Intent, complexity, criticality, patterns, side effects
    ├─ Creates: Semantic edges
@@ -239,7 +239,7 @@ python -c "from app import learning; i = learning.load_learning_insights('85e268
    ↓
 6. Existing: module_abstractor.build_modules()
    ├─ Clusters: Community detection
-   ├─ Names: bob_client.summarize_module()
+   ├─ Names: llm_provider.summarize_module()
    └─ Creates: Module nodes and edges
    ↓
 7. Storage: Save complete graph
@@ -260,16 +260,16 @@ python -c "from app import learning; i = learning.load_learning_insights('85e268
    ├─ Looks up: Learned term → function mappings
    └─ Returns: Suggested function names
    ↓
-3. Existing: bob_client.interpret_query()
+3. Existing: llm_provider.interpret_query()
    ├─ Input: Query + candidate function names
    └─ Output: Relevant function names
    ↓
 4. Enhanced: retrieval.retrieve_subgraph()
-   ├─ Combines: Bob suggestions + learned suggestions
+   ├─ Combines: LLM suggestions + learned suggestions
    ├─ Traverses: Call graph (BFS, max hops)
    └─ Returns: Ordered nodes, subgraph, query_id
    ↓
-5. Existing: bob_client.explain_flow()
+5. Existing: llm_provider.explain_flow()
    ├─ Input: Query + ordered function summaries
    └─ Output: Natural language explanation
    ↓
@@ -341,8 +341,8 @@ _store/
 ├── <graph_id>.git.json                # Git metadata
 │   └── head: str
 │
-└── bob_cache/
-    └── <hash>.json                    # Cached Bob responses
+└── llm_cache/
+    └── <hash>.json                    # Cached LLM responses
         ├── prompt: str
         ├── response: str
         └── timestamp: float
@@ -355,26 +355,22 @@ _store/
 ### Environment Variables
 
 ```bash
-# Required for Bob API (optional - has fallbacks)
-export BOB_API_KEY="your-api-key-here"
 
 # Optional
-export BOB_API_URL="https://bob.ibm.com/api/v1/generate"
 export FLOWIFY_STORE="_store"  # Storage directory (default: _store)
 ```
 
 ### Fallback Behavior
 
-| Feature | With BOB_API_KEY | Without BOB_API_KEY |
 |---------|------------------|---------------------|
-| Repository analysis | Bob LLM (0.85 confidence) | Heuristics (0.5 confidence) |
-| Semantic analysis | Bob LLM (0.8 confidence) | Heuristics (0.4 confidence) |
-| Function summaries | Bob LLM | Template-based |
-| Module naming | Bob LLM | Directory-based |
-| Query interpretation | Bob LLM | Keyword matching |
-| Flow explanation | Bob LLM | Template-based |
+| Repository analysis | LLM (0.85 confidence) | Heuristics (0.5 confidence) |
+| Semantic analysis | LLM (0.8 confidence) | Heuristics (0.4 confidence) |
+| Function summaries | LLM | Template-based |
+| Module naming | LLM | Directory-based |
+| Query interpretation | LLM | Keyword matching |
+| Flow explanation | LLM | Template-based |
 
-**Key Point**: **Pipeline works end-to-end without Bob API**
+**Key Point**: **Pipeline works end-to-end without an LLM provider**
 
 ---
 
@@ -531,7 +527,7 @@ curl http://localhost:8000/analytics?graph_id=abc123def456
 **Solution**: Graph created before Phase 1 - re-ingest repository
 
 **Issue**: Low confidence scores  
-**Solution**: Set BOB_API_KEY for higher confidence analysis
+**Solution**: Configure an LLM provider (see LLM_PROVIDER) for higher confidence analysis
 
 **Issue**: Slow ingestion  
 **Solution**: Normal on first run - subsequent runs use cache
@@ -578,13 +574,13 @@ curl http://localhost:8000/analytics?graph_id=abc123def456
 
 ## Conclusion
 
-The Bob integration is **complete, validated, and production-ready**. All three phases work together seamlessly to provide:
+The LLM integration is **complete, validated, and production-ready**. All three phases work together seamlessly to provide:
 
 1. **Holistic Understanding** (Phase 1)
 2. **Semantic Intelligence** (Phase 2)
 3. **Continuous Learning** (Phase 3)
 
-The system gracefully handles Bob API unavailability through comprehensive heuristic fallbacks, ensuring the pipeline always works end-to-end.
+The system gracefully handles an LLM provider unavailability through comprehensive heuristic fallbacks, ensuring the pipeline always works end-to-end.
 
 **Status**: ✅ **Ready for Production Use**
 
@@ -596,7 +592,7 @@ The system gracefully handles Bob API unavailability through comprehensive heuri
 - `docs/phase1_implementation.md` - Phase 1 detailed guide
 - `docs/phase2_implementation.md` - Phase 2 detailed guide
 - `docs/phase3_implementation.md` - Phase 3 detailed guide
-- `backend/app/bob_client.py` - Bob integration implementation
+- `backend/app/llm_provider.py` - LLM integration implementation
 - `backend/app/learning.py` - Learning system implementation
 - `backend/app/pipeline.py` - Pipeline orchestration
 

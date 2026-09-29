@@ -1,5 +1,5 @@
 # Flowify MCP Server Setup Script for Windows
-# This script installs dependencies and configures the MCP server for Bob
+# This script installs dependencies and configures the MCP server for VS Code AI agents
 
 Write-Host "=== Flowify MCP Server Setup ===" -ForegroundColor Cyan
 Write-Host ""
@@ -70,7 +70,7 @@ Write-Host ""
 Write-Host "Next steps:" -ForegroundColor Yellow
 Write-Host "1. Ensure FastAPI backend is running: cd ..\backend && uvicorn app.main:app --port 8000" -ForegroundColor White
 Write-Host "2. Restart VS Code to load the MCP server" -ForegroundColor White
-Write-Host "3. Ask Bob: 'What tools do you have available?'" -ForegroundColor White
+Write-Host "3. Ask your AI assistant: 'What tools do you have available?'" -ForegroundColor White
 Write-Host "4. Test with: 'Ingest the repository at D:/Projects/hackathon/Flowify'" -ForegroundColor White
 Write-Host ""
 Write-Host "Documentation:" -ForegroundColor Yellow
@@ -79,4 +79,3 @@ Write-Host "- Full Guide: ..\docs\MCP_INTEGRATION.md" -ForegroundColor White
 Write-Host "- Testing: ..\tests\test_llm_integration.md" -ForegroundColor White
 Write-Host ""
 
-# Made with Bob

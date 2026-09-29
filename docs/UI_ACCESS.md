@@ -1,6 +1,6 @@
-# Enabling Bob to Access Flowify UI
+# Enabling AI Agents to Access Flowify UI
 
-This guide explains how to make the Flowify frontend accessible to Bob so it can interact with the visual graph interface.
+This guide explains how to make the Flowify frontend accessible to the agent so it can interact with the visual graph interface.
 
 ## Quick Start
 
@@ -39,30 +39,30 @@ npm install
 npm run dev
 ```
 
-## Making UI Accessible to Bob
+## Making UI Accessible to the agent
 
-Once the servers are running, Bob can access the UI in several ways:
+Once the servers are running, The agent can access the UI in several ways:
 
 ### 1. Direct Browser Access
 
-Tell Bob to open the frontend URL:
+Tell your agent to open the frontend URL:
 ```
 "Open http://localhost:5173 in a browser"
 ```
 
-Bob can then:
+The agent can then:
 - Take screenshots of the UI
 - Analyze the visual graph
 - Provide feedback on the interface
 
 ### 2. API-Based Interaction
 
-Bob can interact with the backend API directly to:
+The agent can interact with the backend API directly to:
 - Ingest repositories
 - Query the graph
 - Retrieve function details
 
-Example commands for Bob:
+Example commands for the agent:
 ```
 "Use the MCP tools to ingest this repository and show me the graph"
 "Query the graph for 'how does authentication work'"
@@ -70,7 +70,7 @@ Example commands for Bob:
 
 ### 3. MCP Server Integration
 
-The MCP server provides Bob with direct access to Flowify's capabilities:
+The MCP server provides the agent with direct access to Flowify's capabilities:
 
 **Available Tools:**
 - `ingest_repo` - Analyze a repository
@@ -100,7 +100,7 @@ cd mcp_server
 python flowify_mcp.py
 ```
 
-The MCP server should start and be ready to accept tool calls from Bob.
+The MCP server should start and be ready to accept tool calls from the agent.
 
 ## Port Configuration
 
@@ -139,9 +139,9 @@ BACKEND_PORT=9000 FRONTEND_PORT=3000 ./run.sh
 2. Check MCP server configuration: `mcp_server/config.json`
 3. Verify environment variables in `.claude/mcp.json`
 
-## Bob-Specific Instructions
+## Agent-Specific Instructions
 
-When Bob needs to interact with the UI:
+When the agent needs to interact with the UI:
 
 1. **Start the servers** using `./run.sh` or the PowerShell commands above
 2. **Verify access** by checking http://localhost:8000 and http://localhost:5173
@@ -149,12 +149,12 @@ When Bob needs to interact with the UI:
 4. **Take screenshots** if visual analysis is needed
 5. **Query the API** directly for specific data
 
-## Example Bob Workflow
+## Example Agent Workflow
 
 ```
 User: "Show me the Flowify UI"
 
-Bob Actions:
+Agent Actions:
 1. Check if servers are running
 2. If not, suggest: "Let me start the servers for you"
 3. Execute: ./run.sh (or PowerShell equivalent)

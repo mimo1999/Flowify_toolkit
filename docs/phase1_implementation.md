@@ -2,7 +2,7 @@
 
 ## Overview
 
-Phase 1 adds **repository-level intelligence** to Flowify by analyzing the entire codebase before detailed parsing begins. This gives Bob (and the entire pipeline) holistic understanding of the project's purpose, architecture, and domain.
+Phase 1 adds **repository-level intelligence** to Flowify by analyzing the entire codebase before detailed parsing begins. This gives the LLM (and the entire pipeline) holistic understanding of the project's purpose, architecture, and domain.
 
 ## What's New
 
@@ -20,9 +20,9 @@ Phase 1 adds **repository-level intelligence** to Flowify by analyzing the entir
 
 ### 2. Dual Analysis Strategy
 
-**Bob API Mode** (when `BOB_API_KEY` is set):
+**LLM mode** (when a provider is configured):
 - Reads README, requirements.txt, package.json, etc.
-- Sends context to Bob for intelligent analysis
+- Sends context to the LLM for intelligent analysis
 - Returns high-confidence (0.85) structured metadata
 
 **Heuristic Fallback Mode** (no API key needed):
@@ -30,7 +30,7 @@ Phase 1 adds **repository-level intelligence** to Flowify by analyzing the entir
 - Detects tech stack from dependencies
 - Infers architecture from folder layout
 - Returns medium-confidence (0.5) metadata
-- **Pipeline works end-to-end without Bob API**
+- **Pipeline works end-to-end without an LLM provider**
 
 ## Files Modified
 
@@ -51,7 +51,7 @@ class RepositoryContext(BaseModel):
     fallback_used: bool
 ```
 
-### 2. `backend/app/bob_client.py`
+### 2. `backend/app/llm_provider.py`
 Added two new functions:
 
 **`_heuristic_repo_analysis(repo_path: str) -> dict`**
@@ -64,7 +64,7 @@ Added two new functions:
 **`analyze_repository(repo_path: str) -> dict`**
 - Main entry point for repository analysis
 - Tries heuristic analysis first (baseline)
-- Enhances with Bob API if available
+- Enhances with an LLM provider if available
 - Gracefully falls back on errors
 - Returns RepositoryContext-compatible dict
 
@@ -73,7 +73,7 @@ Enhanced `ingest()` function:
 ```python
 def ingest(repo_path: str) -> GraphPayload:
     # NEW: Phase 1 - Analyze repository first
-    repo_context_dict = bob_client.analyze_repository(repo_path)
+    repo_context_dict = llm_provider.analyze_repository(repo_path)
     repo_context = RepositoryContext(**repo_context_dict)
     
     # Print analysis results
@@ -168,11 +168,9 @@ curl http://localhost:8000/repo_context?graph_id=abc123def456
 }
 ```
 
-### Example 3: Without Bob API (Heuristic Mode)
+### Example 3: Without an LLM provider (Heuristic Mode)
 
 ```bash
-# Don't set BOB_API_KEY
-unset BOB_API_KEY
 
 # Ingest still works with heuristic analysis
 curl -X POST http://localhost:8000/ingest_repo \
@@ -214,7 +212,7 @@ _store/
 4. **Debugging**: Understand why certain modules were created
 
 ### Future Benefits (Phase 2+)
-1. **Context-Aware Summarization**: Bob can tailor function summaries to domain
+1. **Context-Aware Summarization**: the LLM can tailor function summaries to domain
 2. **Architecture-Aware Clustering**: Module detection uses architecture patterns
 3. **Domain-Specific Edges**: Semantic relationships based on project type
 4. **Smart Query Interpretation**: Queries use domain terminology
@@ -223,10 +221,10 @@ _store/
 
 ### Test Heuristic Analysis
 ```python
-from backend.app import bob_client
+from backend.app import llm_provider
 
 # Test on Flowify itself
-result = bob_client.analyze_repository(".")
+result = llm_provider.analyze_repository(".")
 print(result)
 
 # Expected output:
@@ -241,11 +239,8 @@ print(result)
 # }
 ```
 
-### Test with Bob API
+### Test with an LLM provider
 ```bash
-# Set your Bob API key
-export BOB_API_KEY="your-api-key-here"
-export BOB_API_URL="https://bob.ibm.com/api/v1/generate"  # Optional
 
 # Run ingestion
 python -c "
@@ -279,21 +274,21 @@ Phase 1 is complete! Ready for:
 **Solution**: Re-ingest the repository to generate context.
 
 ### Issue: Low confidence scores (0.5)
-**Cause**: Using heuristic fallback without Bob API.
-**Solution**: Set `BOB_API_KEY` for higher confidence analysis.
+**Cause**: Using heuristic fallback without an LLM provider.
+**Solution**: Configure an LLM provider (see LLM_PROVIDER) for higher confidence analysis.
 
 ### Issue: Wrong project type detected
 **Cause**: Heuristic analysis limitations.
 **Solution**: 
 1. Add more descriptive README
-2. Use Bob API for better analysis
+2. Use an LLM provider for better analysis
 3. Manually correct in future UI (Phase 3)
 
 ## Performance
 
 - **Heuristic analysis**: ~50-200ms (file I/O only)
-- **Bob API analysis**: ~1-3 seconds (network + LLM)
-- **Cached Bob response**: ~50ms (disk read)
+- **an LLM provider analysis**: ~1-3 seconds (network + LLM)
+- **Cached LLM response**: ~50ms (disk read)
 - **Overall impact**: Adds <5% to total ingestion time
 
 ## Conclusion

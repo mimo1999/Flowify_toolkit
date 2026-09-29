@@ -17,7 +17,7 @@ Phase 2 adds **semantic understanding** to the Flowify graph by analyzing functi
 - **Patterns**: Design patterns detected (factory, singleton, decorator, etc.)
 - **Side Effects**: External interactions (file_io, network, database, state_mutation, logging)
 - **Data Flow**: Input/output/transformation description
-- **Confidence**: Bob's confidence in the analysis (0.0 to 1.0)
+- **Confidence**: the LLM's confidence in the analysis (0.0 to 1.0)
 
 ### 2. Semantic Edge Types
 
@@ -74,7 +74,7 @@ class SemanticEdge(BaseModel):
     target_id: str
     confidence: float
     description: Optional[str]
-    inferred_by: Literal["bob", "ast", "heuristic"]
+    inferred_by: Literal["llm", "ast", "heuristic"]
 
 # Enhanced function node
 class FunctionNode(BaseModel):
@@ -87,7 +87,7 @@ class GraphPayload(BaseModel):
     semantic_edges: List[SemanticEdge] = []  # NEW
 ```
 
-### 2. `backend/app/bob_client.py`
+### 2. `backend/app/llm_provider.py`
 
 Added two new functions:
 
@@ -101,8 +101,8 @@ Added two new functions:
 **`analyze_function_semantics(name, code, repo_context, neighbors) -> dict`**
 - Main entry point for semantic analysis
 - Uses heuristic baseline
-- Enhances with Bob API if available
-- Returns high-confidence (0.8) metadata with Bob
+- Enhances with an LLM provider if available
+- Returns high-confidence (0.8) metadata with the LLM
 - Gracefully falls back on errors
 
 ### 3. `backend/app/pipeline.py`
@@ -122,7 +122,7 @@ def _analyze_semantics(
 
 def ingest(repo_path: str) -> GraphPayload:
     # Phase 1: Repository analysis
-    repo_context = bob_client.analyze_repository(repo_path)
+    repo_context = llm_provider.analyze_repository(repo_path)
     
     # Build function graph
     g, function_nodes, function_edges = graph_builder.build_function_graph(repo_path)
@@ -223,7 +223,7 @@ curl http://localhost:8000/semantic_analysis?graph_id=abc123
       "target_id": "graph_builder.py::build_function_graph",
       "confidence": 0.8,
       "description": "Coordinates graph building process",
-      "inferred_by": "bob"
+      "inferred_by": "llm"
     },
     {
       "type": "PERSISTS",
@@ -231,17 +231,16 @@ curl http://localhost:8000/semantic_analysis?graph_id=abc123
       "target_id": "storage.py::save",
       "confidence": 0.8,
       "description": "Saves graph payload to storage",
-      "inferred_by": "bob"
+      "inferred_by": "llm"
     }
   ]
 }
 ```
 
-### Example 3: Heuristic Mode (No Bob API)
+### Example 3: Heuristic Mode (No an LLM provider)
 
 ```bash
-# Without BOB_API_KEY, heuristic analysis still works
-unset BOB_API_KEY
+# Without an LLM provider, heuristic analysis still works
 
 curl -X POST http://localhost:8000/ingest_repo \
   -H "Content-Type: application/json" \
@@ -313,8 +312,8 @@ curl -X POST http://localhost:8000/ingest_repo \
 ## Performance
 
 - **Heuristic analysis**: ~10-50ms per function (pattern matching)
-- **Bob API analysis**: ~500-1500ms per function (LLM call)
-- **Cached Bob response**: ~10ms per function (disk read)
+- **an LLM provider analysis**: ~500-1500ms per function (LLM call)
+- **Cached LLM response**: ~10ms per function (disk read)
 - **Overall impact**: Adds ~20-30% to total ingestion time (with caching)
 
 ## Storage
@@ -337,15 +336,15 @@ _store/
 **Solution**: Re-ingest the repository.
 
 ### Issue: Low confidence scores (0.4)
-**Cause**: Using heuristic fallback without Bob API.
-**Solution**: Set `BOB_API_KEY` for higher confidence analysis.
+**Cause**: Using heuristic fallback without an LLM provider.
+**Solution**: Configure an LLM provider (see LLM_PROVIDER) for higher confidence analysis.
 
 ### Issue: Missing semantic edges
-**Cause**: Bob couldn't infer relationships or target functions not found.
+**Cause**: the LLM couldn't infer relationships or target functions not found.
 **Solution**: Normal - not all functions have semantic relationships.
 
 ### Issue: Slow ingestion
-**Cause**: Bob API calls for each function.
+**Cause**: an LLM provider calls for each function.
 **Solution**: 
 1. Responses are cached - subsequent runs are fast
 2. Consider batching (future optimization)
@@ -366,7 +365,7 @@ Phase 2 is complete! Ready for:
 ### Test Heuristic Semantic Analysis
 
 ```python
-from backend.app import bob_client
+from backend.app import llm_provider
 
 # Test on a simple function
 code = """
@@ -375,7 +374,7 @@ def save_data(data, filename):
         json.dump(data, f)
 """
 
-result = bob_client._heuristic_semantic_analysis(
+result = llm_provider._heuristic_semantic_analysis(
     "save_data",
     code,
     {"project_type": "web_api", "domain": "general"}

@@ -61,7 +61,7 @@ SemanticEdgeType = Literal[
 # Phase 1: Repository Intelligence Layer Models
 
 class RepositoryContext(BaseModel):
-    """Metadata from Bob's repository-level analysis."""
+    """Metadata from the LLM's repository-level analysis."""
     
     project_type: Literal[
         "web_api", "cli_tool", "library", "desktop_app",
@@ -89,12 +89,12 @@ class RepositoryContext(BaseModel):
     )
     critical_modules: List[str] = Field(
         default_factory=list,
-        description="Core modules identified by Bob"
+        description="Core modules identified by the LLM"
     )
     confidence: float = Field(
         default=0.0,
         ge=0.0, le=1.0,
-        description="Bob's confidence in this analysis"
+        description="The LLM's confidence in this analysis"
     )
     analyzed_at: str = Field(
         default_factory=lambda: datetime.utcnow().isoformat(),
@@ -102,14 +102,14 @@ class RepositoryContext(BaseModel):
     )
     fallback_used: bool = Field(
         default=False,
-        description="True if heuristic fallback was used instead of Bob API"
+        description="True if heuristic fallback was used instead of an LLM"
     )
 
 
 # Phase 2: Semantic Metadata Models
 
 class SemanticMetadata(BaseModel):
-    """Semantic analysis from Bob (Phase 2)."""
+    """Semantic analysis from the LLM (Phase 2)."""
     
     intent: Literal[
         "orchestration", "transformation", "validation",
@@ -129,7 +129,7 @@ class SemanticMetadata(BaseModel):
     confidence: float = Field(
         default=0.0,
         ge=0.0, le=1.0,
-        description="Bob's confidence in this analysis"
+        description="The LLM's confidence in this analysis"
     )
 
 
@@ -148,7 +148,7 @@ class SemanticEdge(BaseModel):
         None,
         description="Human-readable explanation of the relationship"
     )
-    inferred_by: Literal["bob", "ast", "heuristic"] = "bob"
+    inferred_by: Literal["llm", "ast", "heuristic"] = "llm"
 
 
 _LEGACY_NODE_TO_KIND: Dict[str, CIRNodeKind] = {
@@ -415,8 +415,8 @@ class IngestRequest(BaseModel):
         return self
 
 
-class BobGraphRequest(BaseModel):
-    """Request for Bob/MCP clients that need a generated graph in one call."""
+class AgentGraphRequest(BaseModel):
+    """Request for agent/MCP clients that need a generated graph in one call."""
 
     repo_path: str
     depth: int = Field(

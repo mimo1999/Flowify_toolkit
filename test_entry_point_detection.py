@@ -4,7 +4,7 @@ from pathlib import Path
 sys.path.insert(0, "backend")
 
 from app import graph_builder, module_abstractor
-from app.bob_client import _heuristic_repo_analysis
+from app.llm_provider import _heuristic_repo_analysis
 
 
 def test_python_m_invocations_are_authoritative_entry_points(tmp_path: Path):

@@ -413,7 +413,6 @@ LLMProvider (ABC)
 
 Concrete providers:
 ├── HeuristicProvider   — deterministic stubs, no network
-├── BobProvider         — IBM watsonx (BOB_API_KEY + BOB_API_URL)
 ├── AnthropicProvider   — Claude (ANTHROPIC_API_KEY)
 ├── OpenAIProvider      — OpenAI / Codex (OPENAI_API_KEY)
 ├── CopilotProvider     — GitHub Copilot (GITHUB_TOKEN)
@@ -442,7 +441,7 @@ Produces deterministic stub responses:
 ```python
 get_provider():
   1. Check LLM_PROVIDER env var → exact match
-  2. Auto-detect: BOB_API_KEY → Bob; ANTHROPIC_API_KEY → Anthropic; OPENAI_API_KEY → OpenAI; GITHUB_TOKEN → Copilot; OPENCLAW_API_KEY → OpenClaw
+  2. Auto-detect: ANTHROPIC_API_KEY → Anthropic; OPENAI_API_KEY → OpenAI; GITHUB_TOKEN → Copilot; OPENCLAW_API_KEY → OpenClaw
   3. Fallback → HeuristicProvider
 ```
 
@@ -467,7 +466,7 @@ Produces a detailed prompt containing:
 
 ```
 1. build_prompt(...)
-2. bob_client.ask_json(prompt, fallback) → dict
+2. llm_provider.ask_json(prompt, fallback) → dict
 3. Validate against LLMIngestionResult schema
 4. Return (LLMIngestionResult, prompt_text)
 ```
@@ -570,7 +569,7 @@ SemanticEdge
 ├── source_id, target_id
 ├── type: SemanticEdgeType      TRANSFORMS | VALIDATES | ORCHESTRATES | PERSISTS | RETRIEVES | ...
 ├── confidence: float
-└── inferred_by: "bob" | "heuristic"
+└── inferred_by: "llm" | "heuristic"
 ```
 
 #### `GraphPayload`
@@ -623,7 +622,7 @@ GET  /analytics             learning stats (query count, helpful rate)
 GET  /hot_nodes             most-accessed functions
 GET  /common_paths          frequently traversed call chains
 POST /update_importance     recalculate criticality from usage data
-POST /bob/graph             CIR graph export for Bob/MCP consumers
+POST /agent/graph             CIR graph export for agent/MCP consumers
 ```
 
 ---
@@ -790,7 +789,6 @@ All paths use POSIX separators (`/`) regardless of OS.
 ```
 Environment variable    Provider class       API call
 ──────────────────────────────────────────────────────────────────
-LLM_PROVIDER=bob        BobProvider          POST BOB_API_URL
 LLM_PROVIDER=claude     AnthropicProvider    Anthropic messages API
 LLM_PROVIDER=openai     OpenAIProvider       POST OPENAI_BASE_URL/chat/completions
 LLM_PROVIDER=copilot    CopilotProvider      GitHub Copilot API (OpenAI-compat.)
@@ -932,9 +930,7 @@ A graph with ID `923fa37b221f` produces files:
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `LLM_PROVIDER` | *(auto)* | `bob` / `claude` / `openai` / `copilot` / `openclaw` / `heuristic` |
-| `BOB_API_KEY` | — | IBM watsonx API key |
-| `BOB_API_URL` | — | IBM watsonx endpoint URL |
+| `LLM_PROVIDER` | *(auto)* | `claude` / `openai` / `copilot` / `openclaw` / `heuristic` |
 | `ANTHROPIC_API_KEY` | — | Anthropic Claude API key |
 | `ANTHROPIC_MODEL` | `claude-3-5-haiku-latest` | Model override |
 | `OPENAI_API_KEY` | — | OpenAI API key |

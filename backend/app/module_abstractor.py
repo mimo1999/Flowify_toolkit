@@ -3,7 +3,7 @@
 Strategy:
   1. Restrict to function/method/class nodes (drop file nodes for clustering).
   2. Run an undirected community detection (greedy modularity) on the call graph.
-  3. For each cluster, ask Bob for a name + description.
+  3. For each cluster, ask the LLM for a name + description.
   4. Module FLOW edges = aggregated cross-cluster CALLS.
   5. Tag entry points and organize control flow patterns.
 
@@ -24,7 +24,7 @@ import networkx as nx
 from networkx.algorithms.community import greedy_modularity_communities
 
 from .models import ModuleNode, ModuleEdge, FunctionNode, FunctionEdge
-from . import bob_client, control_flow_analyzer
+from . import llm_provider, control_flow_analyzer
 
 # greedy_modularity_communities is the one genuinely expensive step in this
 # pipeline — it OOM'd a 512 MB container on a 2275-node call graph (measured:
@@ -139,7 +139,7 @@ def build_modules(
         mid = f"mod_{uuid.uuid4().hex[:8]}"
         hint = _name_hint(cluster, g)
         summaries = [g.nodes[n].get("summary") or g.nodes[n].get("name", "") for n in cluster[:30]]
-        meta = bob_client.summarize_module(hint, summaries)
+        meta = llm_provider.summarize_module(hint, summaries)
         
         # Check if this module contains entry points
         module_entry_funcs = [fid for fid in cluster if fid in entry_point_functions]
@@ -633,8 +633,14 @@ def collapse_for_depth(
     function_nodes_by_id: Dict[str, dict],
     depth: int,
     function_edges: List[dict] | None = None,
+    tier1_budget: int | None = None,
 ) -> dict:
     """Return a JSON-friendly graph for the requested depth (1..3).
+
+    `tier1_budget` (depth 3 only): show just each module's top call-graph
+    tier — functions nothing else calls (entry points, handlers) — ranked by
+    how much they call, with the budget split across modules (min 4 each). Callees are then pulled in one
+    click at a time via `expand_node`. Default None keeps the full view.
 
     Edges emitted at each depth:
       depth 1: FLOW between modules (aggregated cross-cluster CALLS).
@@ -720,10 +726,31 @@ def collapse_for_depth(
 
     # ---- depth 3: real function nodes + real CALLS edges -------------------
     visible_func_ids: set = set()
+    tier1_ids: set | None = None
+    total_functions = sum(
+        1 for m in module_nodes for fid in m.linked_function_ids if fid in function_nodes_by_id
+    )
+    if tier1_budget is not None:
+        per_module = max(4, tier1_budget // max(1, len(module_nodes)))
+        callers_of: Dict[str, set] = defaultdict(set)
+        out_deg: Dict[str, int] = defaultdict(int)
+        for e in function_edges:
+            if _is_invocation(e) and e["source_id"] != e["target_id"]:
+                callers_of[e["target_id"]].add(e["source_id"])
+                out_deg[e["source_id"]] += 1
+        tier1_ids = set()
+        for m in module_nodes:
+            fids = [fid for fid in m.linked_function_ids if fid in function_nodes_by_id]
+            roots = [fid for fid in fids if not callers_of.get(fid)] or fids
+            roots.sort(key=lambda fid: (-out_deg[fid], function_nodes_by_id[fid].get("name", fid)))
+            tier1_ids.update(roots[:per_module])
+
     for m in module_nodes:
         for fid in m.linked_function_ids:
             f = function_nodes_by_id.get(fid)
             if not f:
+                continue
+            if tier1_ids is not None and fid not in tier1_ids:
                 continue
             visible_func_ids.add(fid)
             nodes_out.append({
@@ -746,4 +773,7 @@ def collapse_for_depth(
                 "id": f"calls:{s}->{t}",
                 "source": s, "target": t, "kind": "CALLS",
             })
-    return {"nodes": nodes_out, "edges": edges_out, "depth": 3}
+    result = {"nodes": nodes_out, "edges": edges_out, "depth": 3}
+    if tier1_ids is not None:
+        result["tier1"] = {"shown": len(visible_func_ids), "total": total_functions}
+    return result

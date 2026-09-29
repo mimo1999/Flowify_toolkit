@@ -2,7 +2,7 @@
 
 Lives outside pipeline.py so graph_builder (which pipeline imports) can also
 raise these without a circular import. All are ValueError subclasses so
-existing `except ValueError` handlers (e.g. bob_export's callers) keep
+existing `except ValueError` handlers (e.g. agent_export's callers) keep
 working without changes.
 """
 from __future__ import annotations

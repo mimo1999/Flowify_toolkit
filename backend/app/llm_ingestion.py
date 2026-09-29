@@ -9,7 +9,7 @@ import json
 import textwrap
 from typing import Dict, List
 
-from . import bob_client
+from . import llm_provider
 from .models import (
     FunctionEdge,
     FunctionNode,
@@ -224,7 +224,7 @@ def ingest_ast_results(
         semantic_edges,
     )
     fallback = _fallback_result(function_nodes, module_to_functions, module_nodes).model_dump()
-    raw = bob_client.ask_json(prompt, fallback)
+    raw = llm_provider.ask_json(prompt, fallback)
     try:
         result = LLMIngestionResult(**raw)
     except Exception:

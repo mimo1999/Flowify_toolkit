@@ -88,7 +88,6 @@ subgraph BE["🖥️  Backend  (backend/app/)"]
     llm_getProvider["get_provider()"]:::fn
     llm_base["LLMProvider (ABC)"]:::cls
     llm_heuristic["HeuristicProvider"]:::cls
-    llm_bob["BobProvider"]:::cls
     llm_anthropic["AnthropicProvider"]:::cls
     llm_openai["OpenAIProvider"]:::cls
     llm_copilot["CopilotProvider"]:::cls
@@ -275,14 +274,12 @@ ret_entryNodes -->|calls| learn_record
 
 %% LLM provider
 llm_getProvider -->|creates| llm_heuristic
-llm_getProvider -->|creates| llm_bob
 llm_getProvider -->|creates| llm_anthropic
 llm_getProvider -->|creates| llm_openai
 llm_getProvider -->|creates| llm_copilot
 llm_heuristic  -->|calls| llm_heurRepo
 llm_heuristic  -->|calls| llm_discover
 llm_heurRepo   -->|calls| llm_scoreEntry
-llm_bob        -->|calls| llm_api
 llm_anthropic  -->|calls| llm_api
 llm_openai     -->|calls| llm_api
 llm_copilot    -.->|extends| llm_openai
@@ -373,7 +370,7 @@ st_feedback  -->|POST /api/feedback| EP_feedback
 | 1 | `backend/app/main.py` | `app = FastAPI()`, contains all HTTP routes |
 | 2 | `mcp_server/flowify_mcp.py` | `Server("flowify")`, MCP entrypoint |
 | 3 | `backend/app/pipeline.py` | `ingest()` / `update()` — core orchestrator |
-| 4 | `backend/app/bob_graph_cli.py` | CLI entrypoint (argparse / `__main__`) |
+| 4 | `backend/app/graph_cli.py` | CLI entrypoint (argparse / `__main__`) |
 
 ---
 

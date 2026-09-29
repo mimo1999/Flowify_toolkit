@@ -36,6 +36,35 @@ _COMPLEXITY_RANK = {"low": 0, "medium": 1, "high": 2, "very_high": 3}
 _CRITICALITY_RANK = {"low": 0, "medium": 1, "high": 2, "critical": 3}
 
 
+def importance_scores(node_metrics: Dict[str, dict]) -> Dict[str, float]:
+    """0..1 importance per node from the cached per-node metrics.
+
+    Blends PageRank (how central), fan-in (how many things depend on it) and
+    criticality. Both structural terms are sqrt-scaled against the repo-wide
+    max so one hub doesn't flatten everything else to ~0; structure carries
+    most of the weight because complexity/criticality are uniform in stub mode.
+    """
+    if not node_metrics:
+        return {}
+    max_pr = max((m.get("pagerank") or 0.0) for m in node_metrics.values()) or 1.0
+    max_in = max((m.get("in_degree") or 0) for m in node_metrics.values()) or 1
+    top_crit = max(_CRITICALITY_RANK.values())
+    out = {}
+    for nid, m in node_metrics.items():
+        crit = _CRITICALITY_RANK.get(m.get("criticality"), 0) / top_crit
+        out[nid] = round(
+            0.45 * (((m.get("pagerank") or 0.0) / max_pr) ** 0.5)
+            + 0.35 * (((m.get("in_degree") or 0) / max_in) ** 0.5)
+            + 0.20 * crit,
+            3,
+        )
+    return out
+
+
+def importance_level(score: float) -> str:
+    return "high" if score >= 0.6 else "medium" if score >= 0.35 else "low"
+
+
 def _call_graph(payload: GraphPayload) -> nx.DiGraph:
     """Directed graph of callable/type nodes connected by INVOKES edges.
 

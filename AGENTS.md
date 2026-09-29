@@ -6,7 +6,7 @@ This file provides guidance to agents when working with code in this repository.
 
 **Storage System**: Graph data stored as `{graph_id}.json`, metadata as `{graph_id}.{key}.json` in `_store/` (or `FLOWIFY_STORE` env var). Graph IDs are 12-char hex UUIDs, NOT full UUIDs.
 
-**Bob Client Caching**: All Bob API calls cached in `_store/bob_cache/` by SHA256 hash of prompt. Cache is permanent - delete files to invalidate. Falls back to stubs if `BOB_API_KEY` unset.
+**LLM Caching**: All LLM provider calls cached in `_store/llm_cache/` by SHA256 hash of prompt. Cache is permanent - delete files to invalidate. Falls back to heuristic stubs if no provider is configured.
 
 **Module Abstraction**: `module_abstractor.py` creates hierarchical views at 3 depths - depth 1 (modules), depth 2 (files), depth 3 (functions). Entry points detected via heuristics in `find_entry_files()`, NOT from explicit declarations.
 
@@ -44,6 +44,4 @@ cd mcp_server && .\setup.ps1  # Windows only
 ## Environment Variables
 
 - `FLOWIFY_STORE` - Storage directory (default: `_store/`)
-- `BOB_API_KEY` - Bob API key (optional, falls back to stubs)
-- `BOB_API_URL` - Bob endpoint (optional)
 - `FASTAPI_BASE_URL` - For MCP server (default: `http://localhost:8000`)

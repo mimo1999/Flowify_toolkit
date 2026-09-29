@@ -3,7 +3,6 @@
 Select a provider via the LLM_PROVIDER environment variable:
 
     LLM_PROVIDER=ollama     Ollama (local, no key needed — http://localhost:11434)
-    LLM_PROVIDER=bob        IBM Bob / watsonx (BOB_API_KEY + BOB_API_URL)
     LLM_PROVIDER=claude     Anthropic Claude  (ANTHROPIC_API_KEY, opt. ANTHROPIC_MODEL)
     LLM_PROVIDER=openai     OpenAI / Codex    (OPENAI_API_KEY, opt. OPENAI_BASE_URL, OPENAI_MODEL)
     LLM_PROVIDER=copilot    GitHub Copilot    (GITHUB_TOKEN, opt. COPILOT_MODEL)
@@ -16,12 +15,11 @@ Ollama-specific env vars (all optional):
 
 Auto-detection order (when LLM_PROVIDER is not set):
     1. Ollama running on localhost:11434  (no key needed)
-    2. BOB_API_KEY present
-    3. ANTHROPIC_API_KEY present
-    4. OPENAI_API_KEY present
-    5. GITHUB_TOKEN present
-    6. OPENCLAW_API_KEY present
-    7. Heuristic stubs
+    2. ANTHROPIC_API_KEY present
+    3. OPENAI_API_KEY present
+    4. GITHUB_TOKEN present
+    5. OPENCLAW_API_KEY present
+    6. Heuristic stubs
 
 All providers share the same disk cache (keyed by prompt hash) and expose the
 same high-level interface so the rest of the pipeline is completely unaware of
@@ -63,7 +61,7 @@ def _is_stub_response(text: str) -> bool:
     return text.startswith("(stub)") or any(
         marker in text
         for marker in (
-            "[llm error:", "[ollama error:", "[bob error:", "[openai error:", "[claude error:",
+            "[llm error:", "[ollama error:", "[openai error:", "[claude error:",
             "[llm unavailable",
         )
     )
@@ -1128,36 +1126,6 @@ class OllamaProvider(LLMProvider):
 
 
 # ---------------------------------------------------------------------------
-# IBM Bob / watsonx provider
-# ---------------------------------------------------------------------------
-
-class BobProvider(LLMProvider):
-    """IBM Bob / watsonx.ai HTTP API."""
-
-    def __init__(
-        self,
-        api_key: str | None = None,
-        api_url: str | None = None,
-    ) -> None:
-        self.api_key = api_key or os.environ.get("BOB_API_KEY", "")
-        self.api_url = api_url or os.environ.get("BOB_API_URL", "https://bob.ibm.com/api/v1/generate")
-
-    def _call(self, prompt: str) -> str:
-        resp = requests.post(
-            self.api_url,
-            headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
-            json={"prompt": prompt, "max_tokens": 400},
-            timeout=30,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        text = data.get("text") or data.get("output") or ""
-        if not text:
-            raise ValueError("Bob returned an empty response")
-        return text
-
-
-# ---------------------------------------------------------------------------
 # Anthropic Claude provider
 # ---------------------------------------------------------------------------
 
@@ -1292,7 +1260,7 @@ def provider_from_spec(
     environment-variable auto-detect). Used for BYO-key requests.
 
     Only the providers where "bring your own key" is a coherent idea are
-    supported here — Bob is an IBM-internal endpoint and Copilot/OpenClaw are
+    supported here — Copilot/OpenClaw are
     fixed to a single env-configured account, so they're intentionally left
     to the env-var path (get_provider()).
     """
@@ -1357,8 +1325,6 @@ def get_provider() -> LLMProvider:
     # ── Explicit selection ──────────────────────────────────────────────────
     if name in ("ollama", "local"):
         return OllamaProvider()
-    if name in ("bob", "watsonx", "ibm"):
-        return BobProvider()
     if name in ("claude", "anthropic"):
         return AnthropicProvider()
     if name in ("openai", "codex", "gpt"):
@@ -1377,8 +1343,6 @@ def get_provider() -> LLMProvider:
         return OllamaProvider(host=_ollama_host)
 
     # 2. Cloud providers (in priority order)
-    if os.environ.get("BOB_API_KEY"):
-        return BobProvider()
     if os.environ.get("ANTHROPIC_API_KEY"):
         return AnthropicProvider()
     if os.environ.get("OPENAI_API_KEY"):
@@ -1393,7 +1357,7 @@ def get_provider() -> LLMProvider:
 
 # ---------------------------------------------------------------------------
 # Module-level singleton + public API
-# (drop-in replacement for the old bob_client module)
+# public helper API
 # ---------------------------------------------------------------------------
 
 _provider: LLMProvider | None = None

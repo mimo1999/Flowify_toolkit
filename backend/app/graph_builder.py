@@ -852,8 +852,8 @@ def _resolve_call_target(
     # Last resort, tried whether or not there's a receiver: if exactly one
     # *function* (not method) in the whole repo has this name, that's a
     # strong enough signal to use even when the receiver couldn't be traced
-    # to its defining file — e.g. `bob_client.ask_json(...)` where
-    # bob_client.py is a pass-through shim that imports and re-exports
+    # to its defining file — e.g. `helper.ask_json(...)` where
+    # helper.py is a pass-through shim that imports and re-exports
     # ask_json rather than defining it, so the module-alias tier above
     # can't find it there, but it's still uniquely named across the repo.
     # Still gated on true uniqueness, so this can't reintroduce fan-out.

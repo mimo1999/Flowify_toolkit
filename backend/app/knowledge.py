@@ -374,7 +374,7 @@ def edge_provenance(adapter_metadata: dict) -> Provenance:
 
 def semantic_edge_provenance(inferred_by: str, confidence: float) -> Provenance:
     """Provenance for a Phase-2 semantic edge."""
-    src = "llm" if inferred_by == "bob" else "heuristic" if inferred_by == "heuristic" else "ast"
+    src = "llm" if inferred_by == "llm" else "heuristic" if inferred_by == "heuristic" else "ast"
     return Provenance(
         source=src, confidence=confidence,
         reasoning="Inferred by LLM semantic analysis" if src == "llm"

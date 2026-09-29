@@ -246,4 +246,3 @@ class HealthChecker:
 circuit_breaker = CircuitBreaker()
 request_deduplicator = RequestDeduplicator()
 
-# Made with Bob

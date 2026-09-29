@@ -1,7 +1,7 @@
-"""Bob-facing graph export helpers.
+"""Agent-facing graph export helpers.
 
 This module provides one JSON shape shared by the HTTP endpoint and CLI/MCP
-wrappers. Bob can pass a repository root and receive a generated CIR graph in
+wrappers. An agent can pass a repository root and receive a generated CIR graph in
 the same request.
 """
 from __future__ import annotations
@@ -13,7 +13,7 @@ from . import module_abstractor, pipeline, storage
 from .models import GraphPayload
 
 
-BOB_GRAPH_SCHEMA_VERSION = "bob.graph.v1"
+AGENT_GRAPH_SCHEMA_VERSION = "flowify.graph.v1"
 
 
 def _collapsed_view(payload: GraphPayload, depth: int) -> dict:
@@ -33,7 +33,7 @@ def _collapsed_view(payload: GraphPayload, depth: int) -> dict:
     return view
 
 
-def build_bob_graph_response(
+def build_agent_graph_response(
     repo_path: str,
     *,
     depth: int = 3,
@@ -44,7 +44,7 @@ def build_bob_graph_response(
     max_source_bytes: int | None = None,
     max_parse_seconds: float | None = None,
 ) -> Dict[str, Any]:
-    """Ingest `repo_path` and return a Bob-ready graph export.
+    """Ingest `repo_path` and return an agent-ready graph export.
 
     max_nodes/max_source_bytes/max_parse_seconds: forwarded to
     pipeline.ingest() — see its docstring and app.errors.RepoLimitError.
@@ -62,7 +62,7 @@ def build_bob_graph_response(
     llm_ingestion = storage.load_meta(payload.graph_id, "llm_ingestion") if include_llm_ingestion else None
 
     response: Dict[str, Any] = {
-        "schema_version": BOB_GRAPH_SCHEMA_VERSION,
+        "schema_version": AGENT_GRAPH_SCHEMA_VERSION,
         "graph_id": payload.graph_id,
         "repo_path": payload.repo_path,
         "cir_version": payload.cir_version,

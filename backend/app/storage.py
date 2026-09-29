@@ -433,7 +433,7 @@ def _load_payload(graph_id: str, include_code: bool) -> Optional[GraphPayload]:
             target_id=r["target_id"],
             confidence=r["confidence"] if r["confidence"] is not None else 1.0,
             description=r["description"],
-            inferred_by=r["inferred_by"] or "heuristic",
+            inferred_by={None: "heuristic", "": "heuristic", "bob": "llm"}.get(r["inferred_by"], r["inferred_by"]),
         )
         for r in sem_rows
     ]

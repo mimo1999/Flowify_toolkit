@@ -2,7 +2,7 @@
 import sys
 sys.path.insert(0, 'backend')
 
-from app.bob_client import _heuristic_repo_analysis
+from app.llm_provider import _heuristic_repo_analysis
 
 # Test with the Classify repository
 repo_path = r"D:\Documents\Thesis\Project_files\Classify"
@@ -37,4 +37,3 @@ else:
     if 'leave_one_out.py' not in result['key_entry_points']:
         print("  - leave_one_out.py")
 
-# Made with Bob

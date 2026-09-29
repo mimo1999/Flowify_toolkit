@@ -22,7 +22,7 @@ from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from . import (
-    bob_export, pipeline, storage, retrieval, module_abstractor, learning,
+    agent_export, pipeline, storage, retrieval, module_abstractor, learning,
     knowledge as knowledge_mod, graph_analytics, report as report_mod,
 )
 # Imported from .errors, not via the `pipeline` module reference above, so it
@@ -31,7 +31,7 @@ from . import (
 # MagicMock attribute, which `except` can't catch.
 from .errors import RepoLimitError
 from .models import (
-    BobGraphRequest, IngestRequest, UpdateRequest, QueryRequest, QueryResponse,
+    AgentGraphRequest, IngestRequest, UpdateRequest, QueryRequest, QueryResponse,
     FeedbackRequest, MCPIngestResponse, MCPQueryResponse,
     ImpactAnalysis,
 )
@@ -163,7 +163,6 @@ def provider_info():
         "display_name": {
             "heuristic": "No LLM (stub mode)",
             "ollama":    f"Ollama ({extra.get('model', 'local')})",
-            "bob":       "IBM watsonx / Bob",
             "anthropic": "Anthropic Claude",
             "openai":    "OpenAI",
             "copilot":   "GitHub Copilot",
@@ -463,11 +462,11 @@ def mcp_ingest_repo(req: IngestRequest):
         )
 
 
-@api.post("/bob/graph")
-def build_graph_for_bob(req: BobGraphRequest):
-    """Ingest a repo root and return a Bob-ready generated graph.
+@api.post("/agent/graph")
+def build_graph_for_agent(req: AgentGraphRequest):
+    """Ingest a repo root and return an agent-ready generated graph.
 
-    This endpoint is intended for Bob agents, MCP servers, and external repo
+    This endpoint is intended for AI agents, MCP servers, and external repo
     tooling that need the graph payload immediately instead of a graph id to
     query through the Flowify UI endpoints.
     """
@@ -477,7 +476,7 @@ def build_graph_for_bob(req: BobGraphRequest):
     # rather than defaulting to True as the model does for local/MCP use.
     include_full = req.include_full_graph and not IS_SERVER_MODE
     try:
-        return bob_export.build_bob_graph_response(
+        return agent_export.build_agent_graph_response(
             resolved,
             depth=req.depth,
             include_full_graph=include_full,
@@ -506,8 +505,11 @@ def get_entry_points(graph_id: str, max_count: int = 4):
     return {"graph_id": graph_id, "nodes": nodes, "edges": []}
 
 
+_CALLEE_LIMIT = 12
+
+
 @api.get("/expand")
-def expand_graph_node(graph_id: str, node_id: str, action: str = "callees"):
+def expand_graph_node(graph_id: str, node_id: str, action: str = "callees", limit: int = _CALLEE_LIMIT):
     """Lazy-expand a node — returns its direct children and relevant edges.
 
     For file-level nodes (id starts with `file::`):
@@ -524,18 +526,42 @@ def expand_graph_node(graph_id: str, node_id: str, action: str = "callees"):
         return module_abstractor.expand_file_node(
             func_by_id, function_edges, node_id[len("file::"):], action=action,
         )
-    return module_abstractor.expand_node(
+    result = module_abstractor.expand_node(
         payload.module_nodes, func_by_id, function_edges, node_id,
     )
+    if node_id in func_by_id:
+        _rank_callees(graph_id, result, limit)
+    return result
+
+
+def _rank_callees(graph_id: str, result: dict, limit: int) -> None:
+    """Order a function's callees by importance, tag each with its score and
+    level, and keep only the top `limit` (limit<=0 keeps all). The number cut
+    is reported as `hidden` so the UI can disclose it and offer the rest."""
+    scores = graph_analytics.importance_scores(get_graph_analytics(graph_id).get("node_metrics", {}))
+    unique = list({c["id"]: c for c in result["children"]}.values())
+    for c in unique:
+        c["importance"] = scores.get(c["id"], 0.0)
+        c["importance_level"] = graph_analytics.importance_level(c["importance"])
+    unique.sort(key=lambda c: (-c["importance"], c["label"]))
+    kept = unique[:limit] if limit > 0 else unique
+    keep_ids = {c["id"] for c in kept}
+    result["children"] = kept
+    result["edges"] = [e for e in result["edges"] if e["target"] in keep_ids]
+    result["hidden"] = len(unique) - len(kept)
+
+
+_TIER1_BUDGET = 30
 
 
 @api.get("/graph")
-def get_graph(graph_id: str, depth: int = 1):
+def get_graph(graph_id: str, depth: int = 1, tier: int | None = None):
     """Get graph at specified depth with enhanced module metadata.
 
     Depth 1: Shows modules with entry point tagging and control flow summaries
     Depth 2: Shows file-level submodules
-    Depth 3: Shows individual functions
+    Depth 3: Shows individual functions. With `tier=1`, only each module's
+    top call-graph tier (callers-of-nothing); callees load via /expand.
     """
     _check_owned(graph_id)
     payload = storage.load_light(graph_id)
@@ -546,6 +572,7 @@ def get_graph(graph_id: str, depth: int = 1):
     view = module_abstractor.collapse_for_depth(
         payload.module_nodes, payload.module_edges,
         payload.module_to_functions, func_by_id, depth, function_edges,
+        tier1_budget=_TIER1_BUDGET if tier == 1 else None,
     )
     view["graph_id"] = graph_id
     view["repo_path"] = payload.repo_path
@@ -859,7 +886,7 @@ def generate_descriptions(graph_id: str):
 def get_repo_context(graph_id: str):
     """Get repository context analysis for a graph.
     
-    Returns the Bob-analyzed (or heuristic) repository metadata including
+    Returns the LLM-analyzed (or heuristic) repository metadata including
     project type, domain, architecture, tech stack, and purpose.
     """
     _check_owned(graph_id)
@@ -1702,7 +1729,7 @@ def mcp_architectural_summary(graph_id: str):
 # Server-mode hardening: rate limiting + TTL janitor
 # ---------------------------------------------------------------------------
 
-_RATE_LIMITED_PREFIXES = ("/ingest_repo", "/mcp/ingest", "/bob/graph", "/query", "/mcp/query")
+_RATE_LIMITED_PREFIXES = ("/ingest_repo", "/mcp/ingest", "/agent/graph", "/query", "/mcp/query")
 _RATE_LIMIT_WINDOW_S = 60.0
 _RATE_LIMIT_MAX = int(os.environ.get("FLOWIFY_RATE_LIMIT_PER_MIN", "6"))
 _rate_buckets: dict[str, list[float]] = {}

@@ -112,7 +112,7 @@ class TestKnowledge:
         assert p.source == "ast" and p.confidence == 0.9
         p = knowledge.edge_provenance({"source": "pyan"})
         assert p.source == "static_analysis"
-        p = knowledge.semantic_edge_provenance("bob", 0.63)
+        p = knowledge.semantic_edge_provenance("llm", 0.63)
         assert p.source == "llm" and p.confidence == 0.63
 
     def test_knowledge_index_serializable(self, fixture_repo, fixture_payload):

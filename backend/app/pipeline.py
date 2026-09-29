@@ -7,7 +7,7 @@ from typing import Dict, List
 
 import networkx as nx
 
-from . import llm_provider as bob_client, storage, graph_builder, ingestion, module_abstractor, git_updater, llm_ingestion, learning, knowledge, graph_analytics
+from . import llm_provider, storage, graph_builder, ingestion, module_abstractor, git_updater, llm_ingestion, learning, knowledge, graph_analytics
 from .errors import RepoLimitError, RepoSourceTooLargeError, RepoTooLargeError, RepoTooSlowError
 from .models import (
     GraphPayload, FunctionNode, RepositoryContext, SemanticMetadata, SemanticEdge,
@@ -75,9 +75,9 @@ def _enrich_functions(
 
     Returns the list of semantic edges discovered during analysis.
     """
-    provider = bob_client.get_provider()
+    provider = llm_provider.get_provider()
     is_real_llm = not getattr(provider, "_is_heuristic", False)
-    heur = bob_client.heuristic_provider()
+    heur = llm_provider.heuristic_provider()
     ctx = repo_context.model_dump()
     name_to_id = {n.name: n.id for n in nodes}
     semantic_edges: list[SemanticEdge] = []
@@ -121,7 +121,7 @@ def _enrich_functions(
                     target_id=tgt,
                     description=ed.get("description"),
                     confidence=conf,
-                    inferred_by="bob" if conf > 0.5 else "heuristic",
+                    inferred_by="llm" if conf > 0.5 else "heuristic",
                 ))
             except Exception:
                 continue
@@ -369,10 +369,10 @@ def _build_flow_summary(
     selected = _select_significant_modules(payload.module_nodes, payload.module_edges, func_by_id)
     labels = _disambiguate_labels(selected, func_by_id)
     evidence = _flow_evidence(payload, repo_context, selected, labels)
-    provider = bob_client.get_provider()
+    provider = llm_provider.get_provider()
     fallback_used = getattr(provider, "_is_heuristic", False)
 
-    llm = bob_client.summarize_repository_flow(evidence)
+    llm = llm_provider.summarize_repository_flow(evidence)
     module_flows = llm.get("module_flows", {}) or {}
 
     flows = [
@@ -433,10 +433,10 @@ def ingest(
     # and the flow-summary narrative (_build_flow_summary, below, outside
     # this override) are where "AI mode" actually applies: one or two calls
     # each, on demand, per visitor.
-    with bob_client.provider_override(bob_client.heuristic_provider()):
+    with llm_provider.provider_override(llm_provider.heuristic_provider()):
         # Phase 1: Analyze repository context before ingestion
         print(f"[Phase 1] Analyzing repository: {repo_path}")
-        repo_context_dict = bob_client.analyze_repository(repo_path)
+        repo_context_dict = llm_provider.analyze_repository(repo_path)
         try:
             repo_context = RepositoryContext(**repo_context_dict)
         except Exception as e:

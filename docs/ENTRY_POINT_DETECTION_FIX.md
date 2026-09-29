@@ -6,7 +6,7 @@ The user reported that entry points `main_parser.py` and `leave_one_out.py` were
 
 ## Root Cause
 
-The heuristic entry point detection in [`_heuristic_repo_analysis()`](../backend/app/bob_client.py:238) only looked for exact filename matches:
+The heuristic entry point detection in [`_heuristic_repo_analysis()`](../backend/app/llm_provider.py:238) only looked for exact filename matches:
 
 ```python
 # OLD CODE (lines 238-241)
@@ -69,7 +69,7 @@ for py_file in repo_root.glob("*.py"):
 ## Implementation
 
 ### Modified File
-- `backend/app/bob_client.py` (lines 236-276)
+- `backend/app/llm_provider.py` (lines 236-276)
 
 ### Changes
 ```python
@@ -194,11 +194,11 @@ Potential improvements:
 2. Detect entry points in subdirectories (currently only top-level)
 3. Support for other languages (JavaScript, Java, etc.)
 4. Machine learning-based entry point prediction
-5. Integration with Bob API for smarter detection
+5. Integration with an LLM provider for smarter detection
 
 ## Related Files
 
-- `backend/app/bob_client.py` - Entry point detection logic
+- `backend/app/llm_provider.py` - Entry point detection logic
 - `test_entry_points.py` - Validation test
 - `test_ingestion.py` - End-to-end test
 - `docs/phase1_implementation.md` - Phase 1 documentation

@@ -190,4 +190,3 @@ def _pattern_description(pattern_type: str) -> str:
     }
     return descriptions.get(pattern_type, f"Functions in {pattern_type} pattern")
 
-# Made with Bob

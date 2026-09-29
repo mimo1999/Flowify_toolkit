@@ -135,8 +135,8 @@ Enhanced retrieval with learning:
 ```python
 def _entry_nodes(g: nx.DiGraph, query: str, graph_id: str) -> List[str]:
     """Find entry nodes for query, enhanced with learning data."""
-    # Get Bob's interpretation
-    chosen = bob_client.interpret_query(query, names)
+    # Get the LLM's interpretation
+    chosen = llm_provider.interpret_query(query, names)
     
     # Phase 3: Add learned terminology suggestions
     learned_suggestions = learning.get_terminology_suggestions(graph_id, query)
@@ -307,7 +307,7 @@ curl http://localhost:8000/common_paths?graph_id=abc123&min_frequency=3
     [
       {"id": "main.py::query_graph", "name": "query_graph", "file_path": "..."},
       {"id": "retrieval.py::retrieve_subgraph", "name": "retrieve_subgraph", "file_path": "..."},
-      {"id": "bob_client.py::explain_flow", "name": "explain_flow", "file_path": "..."}
+      {"id": "llm_provider.py::explain_flow", "name": "explain_flow", "file_path": "..."}
     ]
   ]
 }
@@ -476,7 +476,7 @@ curl http://localhost:8000/hot_nodes?graph_id=abc123&limit=10
 1. Check terminology mappings
 2. Review unhelpful queries
 3. Add corrections via feedback
-4. Consider improving Bob prompts
+4. Consider improving the LLM prompts
 
 ### Issue: Terminology not learning
 **Cause**: Terms too generic or filtered as stop words.
