@@ -2,17 +2,17 @@ import React, { useState } from "react";
 import { useFlowStore } from "../store.js";
 
 const CopyIcon = () => (
-  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+  <svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
     <rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
   </svg>
 );
 const CloseIcon = () => (
-  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+  <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
     <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
   </svg>
 );
 const FnIcon = () => (
-  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+  <svg aria-hidden="true" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
     <polyline points="16,18 22,12 16,6"/><polyline points="8,6 2,12 8,18"/>
   </svg>
 );
@@ -33,9 +33,9 @@ function ExecutionPath({ steps }) {
   if (!steps || steps.length === 0) return null;
   return (
     <div className="px-5 py-4 border-b border-[#1a2540]">
-      <div className="text-[10px] uppercase tracking-widest text-slate-600 font-semibold mb-3">
-        Execution path
-      </div>
+      <h3 className="text-[10px] uppercase tracking-widest text-slate-600 font-semibold mb-3">
+        Execution Path
+      </h3>
       <div className="space-y-0">
         {steps.slice(0, 12).map((step, i) => {
           const color = SEMANTIC_COLORS[step.semantic_kind] || "#3b82f6";
@@ -51,8 +51,8 @@ function ExecutionPath({ steps }) {
                 }}
               >
                 <div className="flex items-center gap-1.5">
-                  <span style={{ color }}>{icon}</span>
-                  <span className="font-mono text-white/90 truncate flex-1">{step.name}</span>
+                  <span aria-hidden="true" style={{ color }}>{icon}</span>
+                  <span className="font-mono text-white/90 truncate flex-1" translate="no">{step.name}</span>
                   {step.semantic_kind !== "CALLS" && (
                     <span
                       className="text-[8px] font-bold px-1.5 py-0.5 rounded shrink-0"
@@ -97,6 +97,7 @@ export default function QueryResults() {
   const sendFeedback       = useFlowStore((s) => s.sendFeedback);
 
   const [copied,   setCopied]   = useState(false);
+  const [copyFailed, setCopyFailed] = useState(false);
   const [feedback, setFeedback] = useState(null);
 
   if (!explanation) return null;
@@ -119,7 +120,7 @@ export default function QueryResults() {
     navigator.clipboard.writeText(buildContext()).then(() => {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
-    });
+    }).catch(() => setCopyFailed(true));
   };
 
   const handleFeedback = (rating) => {
@@ -130,12 +131,12 @@ export default function QueryResults() {
   const visibleNodes = queryNodes.slice(0, 15);
 
   return (
-    <div className="absolute top-0 right-0 h-full w-[340px] z-10 flex flex-col bg-[#0a0f1a]/96 backdrop-blur-md border-l border-[#1a2540] shadow-[−4px_0_32px_rgba(0,0,0,0.5)] slide-in-right">
+    <aside aria-label="Query Results" className="absolute top-0 right-0 h-full w-[340px] z-10 flex flex-col bg-[#0a0f1a]/96 backdrop-blur-md border-l border-[#1a2540] shadow-[-4px_0_32px_rgba(0,0,0,0.5)] slide-in-right">
 
       {/* Header */}
       <div className="flex items-center justify-between px-5 py-4 border-b border-[#1a2540] shrink-0">
         <div>
-          <div className="text-xs font-semibold text-white">Query results</div>
+          <h2 className="text-xs font-semibold text-white">Query Results</h2>
           {graphNodesConsulted > 0 && (
             <div className="flex items-center gap-1.5 mt-1">
               <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
@@ -146,28 +147,28 @@ export default function QueryResults() {
         <button
           onClick={clearQuery}
           className="w-7 h-7 rounded-lg flex items-center justify-center text-slate-500 hover:text-slate-200 hover:bg-slate-800 transition-colors"
-          aria-label="close"
+          aria-label="Close Query Results"
         >
           <CloseIcon />
         </button>
       </div>
 
       {/* Body */}
-      <div className="flex-1 overflow-y-auto">
+      <div className="flex-1 overflow-y-auto scroll-contain">
 
         {/* Stub warning */}
         {isStub && (
           <div className="mx-4 mt-4 px-3 py-2 rounded-lg bg-amber-950/40 border border-amber-800/40 text-amber-400/80 text-[11px] leading-relaxed">
-            ⚠ AI not configured — responses are placeholder stubs. Set a provider API key for real analysis.
+            <span aria-hidden="true">⚠ </span>AI not configured — responses are placeholder stubs. Set a provider API key for real analysis.
           </div>
         )}
 
         {/* Graph-grounded explanation */}
         <div className="px-5 py-4 border-b border-[#1a2540]">
-          <div className="text-[10px] uppercase tracking-widest text-slate-600 font-semibold mb-2">
-            Graph-grounded explanation
-          </div>
-          <p className="text-sm text-slate-300 leading-relaxed whitespace-pre-wrap">
+          <h3 className="text-[10px] uppercase tracking-widest text-slate-600 font-semibold mb-2">
+            Graph-Grounded Explanation
+          </h3>
+          <p className="text-sm text-slate-300 leading-relaxed whitespace-pre-wrap break-words">
             {isStub ? explanation.replace(/^\(stub\)\s*/, "") : explanation}
           </p>
         </div>
@@ -178,9 +179,9 @@ export default function QueryResults() {
         {/* Relevant functions */}
         {visibleNodes.length > 0 && (
           <div className="px-5 py-4">
-            <div className="text-[10px] uppercase tracking-widest text-slate-600 font-semibold mb-3">
-              Relevant code
-            </div>
+            <h3 className="text-[10px] uppercase tracking-widest text-slate-600 font-semibold mb-3">
+              Relevant Code
+            </h3>
             <ul className="space-y-2">
               {visibleNodes.map((n, i) => (
                 <li
@@ -191,7 +192,7 @@ export default function QueryResults() {
                   <div className="flex items-start gap-2">
                     <span className="text-indigo-400 mt-0.5 shrink-0"><FnIcon /></span>
                     <div className="min-w-0">
-                      <div className="font-mono text-xs text-white truncate">{n.name}</div>
+                      <div className="font-mono text-xs text-white truncate" translate="no">{n.name}</div>
                       <div className="text-[10px] text-slate-500 truncate mt-0.5">{n.file_path}</div>
                       {n.summary && !n.summary.startsWith("(stub)") && (
                         <div className="text-[11px] text-slate-400 mt-1.5 line-clamp-2 leading-relaxed">
@@ -214,32 +215,34 @@ export default function QueryResults() {
           className="w-full flex items-center justify-center gap-2 text-xs font-medium rounded-lg px-3 py-2 bg-[#0f1629] border border-[#1e2d4a] hover:border-blue-600/50 hover:text-blue-400 text-slate-300 transition-colors"
         >
           <CopyIcon />
-          {copied ? "✓ Copied to clipboard!" : "Copy context for LLM"}
+          <span aria-live="polite">{copyFailed ? "Copy Failed — Select Text Manually" : copied ? "✓ Copied to Clipboard" : "Copy Context for LLM"}</span>
         </button>
 
         {queryId && (
-          <div className="flex items-center gap-2">
-            <span className="text-slate-600 text-xs flex-1">Helpful?</span>
+          <div role="group" aria-labelledby="feedback-label" className="flex items-center gap-2">
+            <span id="feedback-label" className="text-slate-600 text-xs flex-1">Helpful?</span>
             {[
-              { r: "helpful",   e: "👍", active: "bg-emerald-900/60 border-emerald-700 text-emerald-300" },
-              { r: "neutral",   e: "😐", active: "bg-slate-800 border-slate-600 text-slate-300" },
-              { r: "unhelpful", e: "👎", active: "bg-rose-900/60 border-rose-800 text-rose-300" },
-            ].map(({ r, e, active }) => (
+              { r: "helpful",   e: "👍", label: "Helpful", active: "bg-emerald-900/60 border-emerald-700 text-emerald-300" },
+              { r: "neutral",   e: "😐", label: "Neutral", active: "bg-slate-800 border-slate-600 text-slate-300" },
+              { r: "unhelpful", e: "👎", label: "Not Helpful", active: "bg-rose-900/60 border-rose-800 text-rose-300" },
+            ].map(({ r, e, label, active }) => (
               <button
                 key={r}
                 onClick={() => handleFeedback(r)}
+                aria-label={label}
+                aria-pressed={feedback === r}
                 className={`flex-1 text-xs rounded-lg py-1 border transition-colors ${
                   feedback === r
                     ? active
                     : "bg-[#0f1629] border-[#1e2d4a] text-slate-500 hover:text-slate-300"
                 }`}
               >
-                {e}
+                <span aria-hidden="true">{e}</span>
               </button>
             ))}
           </div>
         )}
       </div>
-    </div>
+    </aside>
   );
 }

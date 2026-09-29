@@ -150,6 +150,10 @@ export const useFlowStore = create((set, get) => ({
   // Current drill-down depth (1=modules, 2=files, 3=functions)
   currentDepth: null, // null = lazy expand mode, 1/2/3 = depth view
 
+  // Root id of the lane shown in focus mode; null = lane overview. Only
+  // meaningful when there are enough roots for the overview (see GraphView).
+  focusLaneId: null,
+
   setRepoPath: (repoPath) => set({ repoPath }),
 
   // Snapshot the current view onto the undo stack before a navigation action
@@ -158,14 +162,14 @@ export const useFlowStore = create((set, get) => ({
   // the reference captured here is never touched after this point. Capped so
   // a very long session doesn't grow the stack unbounded.
   _pushHistory: () => {
-    const { nodes, edges, expanded, rootIds, currentDepth, viewHistory } = get();
-    const next = [...viewHistory, { nodes, edges, expanded, rootIds, currentDepth }];
+    const { nodes, edges, expanded, rootIds, currentDepth, focusLaneId, viewHistory } = get();
+    const next = [...viewHistory, { nodes, edges, expanded, rootIds, currentDepth, focusLaneId }];
     set({ viewHistory: next.length > 50 ? next.slice(-50) : next });
   },
 
   ingest: async () => {
     const { repoPath } = get();
-    if (!repoPath) return;
+    if (!repoPath.trim()) { set({ error: "Enter a repository path or git URL, then click Ingest." }); return; }
     set({ loading: true, error: "" });
     try {
       const trimmed = repoPath.trim();
@@ -185,7 +189,7 @@ export const useFlowStore = create((set, get) => ({
         insights: null, insightsError: "", nodeRefs: null, nodeMetrics: {}, fileMetrics: {},
         // A fresh ingest starts a new session — old history would otherwise
         // point Back at a different repository's graph.
-        viewHistory: [], currentDepth: null,
+        viewHistory: [], currentDepth: null, focusLaneId: null,
       });
       await get().loadInitial();
     } catch (e) {
@@ -207,7 +211,7 @@ export const useFlowStore = create((set, get) => ({
     (g.edges || []).forEach((e) => {
       if (nodes[e.source] && nodes[e.target]) edges[e.id] = e;
     });
-    set({ nodes, edges, expanded: {}, rootIds: g.nodes.map((n) => n.id), selectedId: null });
+    set({ nodes, edges, expanded: {}, rootIds: g.nodes.map((n) => n.id), selectedId: null, focusLaneId: null });
     // Fire-and-forget: populate heatmap metrics (pagerank/degree/complexity)
     // for the interactive graph without blocking the initial view from showing.
     if (!get().nodeMetrics || Object.keys(get().nodeMetrics).length === 0) {
@@ -224,6 +228,14 @@ export const useFlowStore = create((set, get) => ({
     } else {
       set({ impactData: null, nodeRefs: null });
     }
+  },
+  // Enter focus mode on one lane (or return to the overview with null).
+  // `keepSelection` lets a selection made elsewhere (e.g. Graph Insights)
+  // survive the jump to the lane that contains it.
+  focusLane: (id, keepSelection = false) => {
+    if (get().focusLaneId === id) return;
+    get()._pushHistory();
+    set(keepSelection ? { focusLaneId: id } : { focusLaneId: id, selectedId: null, impactData: null, nodeRefs: null });
   },
   clearSelection: () => set({ selectedId: null, impactData: null, nodeRefs: null }),
   clearQuery: () => set({
@@ -315,7 +327,10 @@ export const useFlowStore = create((set, get) => ({
     if (!graphId) return;
     set({ loading: true, error: "" });
     try {
-      const r = await apiFetch(`${API}/graph?graph_id=${graphId}&depth=${depth}`);
+      // Functions view starts at the top call-graph tier only; callees are
+      // pulled in one click at a time (see toggleExpand).
+      const tierParam = depth === 3 ? "&tier=1" : "";
+      const r = await apiFetch(`${API}/graph?graph_id=${graphId}&depth=${depth}${tierParam}`);
       if (!r.ok) { set({ error: await r.text() }); return; }
       const data = await r.json();
       const nodes = {};
@@ -324,9 +339,16 @@ export const useFlowStore = create((set, get) => ({
       (data.edges || []).forEach((e) => {
         if (nodes[e.source] && nodes[e.target]) edges[e.id] = e;
       });
-      const nodeBudget = applyNodeBudget(nodes, edges);
+      let nodeBudget = applyNodeBudget(nodes, edges);
+      if (data.tier1 && !nodeBudget.truncated) {
+        nodeBudget = { truncated: data.tier1.shown < data.tier1.total, shown: data.tier1.shown, total: data.tier1.total, tiered: true };
+      }
+      // Only true roots (no parent in this view) count as roots — a tier-1
+      // function has its module as parent, so expanding it must not trigger the
+      // root-sibling collapse and fold away other functions the user opened.
+      const rootIds = Object.keys(nodes).filter((id) => !nodes[id].parent || !nodes[nodes[id].parent]);
       get()._pushHistory();
-      set({ nodes, edges, expanded: {}, rootIds: Object.keys(nodes), selectedId: null, currentDepth: depth, nodeBudget });
+      set({ nodes, edges, expanded: {}, rootIds, selectedId: null, currentDepth: depth, nodeBudget, focusLaneId: null });
     } catch (e) {
       set({ error: String(e) });
     } finally {
@@ -342,6 +364,7 @@ export const useFlowStore = create((set, get) => ({
     if (expanded[nodeId]) {
       const nn = { ...nodes }, ne = { ...edges }, nexp = { ...expanded };
       removeSubtree(nn, ne, nexp, nodeId, true);
+      if (nn[nodeId]?.hiddenCallees) nn[nodeId] = { ...nn[nodeId], hiddenCallees: 0 };
       get()._pushHistory();
       set({ nodes: nn, edges: ne, expanded: nexp });
       return;
@@ -368,16 +391,43 @@ export const useFlowStore = create((set, get) => ({
     if (!r.ok) { set({ error: await r.text() }); return; }
     const data = await r.json();
 
+    // Only children this click newly adds are recorded as owned: collapsing
+    // must not delete nodes that were already on screen (e.g. another tier-1
+    // function that this one also calls).
     const childIds = [];
     for (const c of data.children) {
-      if (!nn[c.id]) nn[c.id] = c;  // skip-if-exists: preserve existing node's parent
-      childIds.push(c.id);
+      if (!nn[c.id]) { nn[c.id] = c; childIds.push(c.id); }
     }
     for (const e of data.edges) {
       if (nn[e.source] && nn[e.target]) ne[e.id] = e;
     }
     nexp[nodeId] = childIds;
+    // Callees arrive ranked by importance and capped; remember how many were
+    // left out on the node itself so Back/collapse restore it for free.
+    if (data.hidden) nn[nodeId] = { ...nn[nodeId], hiddenCallees: data.hidden };
 
+    get()._pushHistory();
+    set({ nodes: nn, edges: ne, expanded: nexp });
+  },
+
+  // "+N more" on an expanded node: fetch its full, uncapped callee list and
+  // add whatever isn't on screen yet (still ranked most-important first).
+  showAllCallees: async (nodeId) => {
+    const { graphId, nodes, edges, expanded } = get();
+    if (!graphId || !nodes[nodeId]) return;
+    const r = await apiFetch(`${API}/expand?graph_id=${graphId}&node_id=${encodeURIComponent(nodeId)}&action=callees&limit=0`);
+    if (!r.ok) { set({ error: await r.text() }); return; }
+    const data = await r.json();
+    const nn = { ...nodes }, ne = { ...edges }, nexp = { ...expanded };
+    const owned = [...(nexp[nodeId] || [])];
+    for (const c of data.children) {
+      if (!nn[c.id]) { nn[c.id] = c; owned.push(c.id); }
+    }
+    for (const e of data.edges) {
+      if (nn[e.source] && nn[e.target]) ne[e.id] = e;
+    }
+    nexp[nodeId] = owned;
+    nn[nodeId] = { ...nn[nodeId], hiddenCallees: 0 };
     get()._pushHistory();
     set({ nodes: nn, edges: ne, expanded: nexp });
   },
@@ -424,8 +474,7 @@ export const useFlowStore = create((set, get) => ({
 
         const childIds = [];
         for (const c of data.children) {
-          if (!nn[c.id]) { nn[c.id] = c; added++; }
-          childIds.push(c.id);
+          if (!nn[c.id]) { nn[c.id] = c; added++; childIds.push(c.id); }
         }
         for (const e of data.edges) {
           if (nn[e.source] && nn[e.target]) ne[e.id] = e;
@@ -448,14 +497,14 @@ export const useFlowStore = create((set, get) => ({
     const prev = viewHistory[viewHistory.length - 1];
     set({
       nodes: prev.nodes, edges: prev.edges, expanded: prev.expanded,
-      rootIds: prev.rootIds, currentDepth: prev.currentDepth,
+      rootIds: prev.rootIds, currentDepth: prev.currentDepth, focusLaneId: prev.focusLaneId ?? null,
       viewHistory: viewHistory.slice(0, -1), selectedId: null,
     });
   },
 
   resetView: async () => {
     get()._pushHistory();
-    set({ nodes: {}, edges: {}, expanded: {}, selectedId: null, currentDepth: null });
+    set({ nodes: {}, edges: {}, expanded: {}, selectedId: null, currentDepth: null, focusLaneId: null });
     await get().loadInitial();
   },
 
@@ -513,6 +562,9 @@ export const useFlowStore = create((set, get) => ({
         queryNodes: data.subgraph?.nodes ?? [],
         executionSteps: data.execution_steps ?? [],
         graphNodesConsulted: data.graph_nodes_consulted ?? 0,
+        // Results can land in any lane — show the overview so highlighted
+        // lanes are visible instead of staying inside one focused lane.
+        focusLaneId: null,
       });
     } catch (e) {
       set({ error: String(e) });

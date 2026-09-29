@@ -1,12 +1,13 @@
 import React, { useEffect } from "react";
 import { useFlowStore } from "../store.js";
+import { useDialog } from "./useDialog.js";
 
 // Bumping this key re-shows the modal to everyone once, if the content ever
 // changes enough to be worth re-surfacing — plain "seen" flags don't do that.
 const SEEN_KEY = "flowify_onboarding_seen_v1";
 
 const CloseIcon = () => (
-  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+  <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
     <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
   </svg>
 );
@@ -29,43 +30,44 @@ export default function WelcomeModal() {
 
   // First-ever visit: open once, then remember so a refresh doesn't re-show it.
   useEffect(() => {
-    if (!localStorage.getItem(SEEN_KEY)) {
-      openHelp();
-    }
+    let seen = false;
+    try { seen = !!localStorage.getItem(SEEN_KEY); } catch { /* storage blocked: show once per load */ }
+    if (!seen) openHelp();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const dismiss = () => {
-    localStorage.setItem(SEEN_KEY, "1");
+    try { localStorage.setItem(SEEN_KEY, "1"); } catch { /* storage blocked */ }
     closeHelp();
   };
 
-  useEffect(() => {
-    const onKey = (e) => e.key === "Escape" && dismiss();
-    if (helpOpen) window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [helpOpen]);
+  const dialogRef = useDialog(helpOpen, dismiss);
 
   if (!helpOpen) return null;
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-6"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-6 scroll-contain"
       onClick={dismiss}
     >
       <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="welcome-title"
+        tabIndex={-1}
         className="w-full max-w-md flex flex-col bg-[#0a0f1a] border border-[#1a2540] rounded-2xl shadow-2xl overflow-hidden"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-3.5 border-b border-[#1a2540] shrink-0">
           <div className="flex items-center gap-2">
-            <span className="text-sm">👋</span>
-            <span className="text-sm font-semibold text-white">Welcome to Flowify</span>
+            <span aria-hidden="true" className="text-sm">👋</span>
+            <h2 id="welcome-title" className="text-sm font-semibold text-white">Welcome to Flowify</h2>
           </div>
           <button
             onClick={dismiss}
+            aria-label="Close Welcome Dialog"
             className="w-7 h-7 rounded flex items-center justify-center text-slate-500 hover:text-slate-200 hover:bg-slate-800 transition-colors"
           >
             <CloseIcon />
@@ -79,23 +81,23 @@ export default function WelcomeModal() {
           </p>
 
           <div>
-            <div className="text-[10px] uppercase tracking-widest text-blue-400/80 font-semibold mb-2">
-              How to use it
-            </div>
+            <h3 className="text-[10px] uppercase tracking-widest text-blue-400/80 font-semibold mb-2">
+              How to Use It
+            </h3>
             <ol className="flex flex-col gap-2">
               <Step n={1}>Paste a repo path or git URL in the sidebar, then <b>Ingest</b>.</Step>
-              <Step n={2}>Click ▸ on a node to expand it, or jump straight to a depth (Modules / Files / Functions).</Step>
-              <Step n={3}>Ask a question in the bar at the bottom — the answer cites the exact functions it's grounded in.</Step>
+              <Step n={2}>Click <span aria-hidden="true">▸</span><span className="sr-only">the arrow</span> on a node to expand it, or jump straight to a depth (Modules / Files / Functions).</Step>
+              <Step n={3}>Ask a question in the bar at the bottom — the answer cites the exact functions it’s grounded in.</Step>
             </ol>
           </div>
 
           <div>
-            <div className="text-[10px] uppercase tracking-widest text-blue-400/80 font-semibold mb-2">
-              How to read it
-            </div>
+            <h3 className="text-[10px] uppercase tracking-widest text-blue-400/80 font-semibold mb-2">
+              How to Read It
+            </h3>
             <ul className="flex flex-col gap-1.5 text-sm text-slate-300 leading-snug">
               <li>Node size/glow = importance — bigger and brighter is more central.</li>
-              <li>🔌 🗄️ 📤 📥 badges = API, database, event-emit, event-consume activity.</li>
+              <li><span aria-hidden="true">🔌 🗄️ 📤 📥</span> badges = API, database, event-emit, event-consume activity.</li>
               <li>Edge color = relationship type — full key in the sidebar's <b>Legend</b>.</li>
             </ul>
           </div>
@@ -104,7 +106,7 @@ export default function WelcomeModal() {
             onClick={dismiss}
             className="mt-1 w-full py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium transition-colors"
           >
-            Got it
+            Start Exploring
           </button>
         </div>
       </div>

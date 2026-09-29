@@ -1,15 +1,16 @@
 import React, { useEffect, useState } from "react";
 import { useFlowStore, API, apiFetch } from "../store.js";
+import { LANE_OVERVIEW_MIN, useLanes } from "./laneLayout.js";
 
 // ── Icons (export) ────────────────────────────────────────────────────────────
 const DownloadIcon = () => (
-  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+  <svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
     <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
     <polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/>
   </svg>
 );
 const CopyIcon = () => (
-  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+  <svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
     <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
     <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
   </svg>
@@ -17,34 +18,34 @@ const CopyIcon = () => (
 
 // ── Icons ────────────────────────────────────────────────────────────────────
 const RepoIcon = () => (
-  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+  <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
     <path d="M3 3h18v18H3z" rx="2"/><path d="M3 9h18"/><path d="M9 21V9"/>
   </svg>
 );
 const BackIcon = () => (
-  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+  <svg aria-hidden="true" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
     <polyline points="15,18 9,12 15,6"/>
   </svg>
 );
 const ResetIcon = () => (
-  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+  <svg aria-hidden="true" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
     <polyline points="1,4 1,10 7,10"/>
     <path d="M3.51 15a9 9 0 1 0 .49-3.93"/>
   </svg>
 );
 const PowerIcon = () => (
-  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+  <svg aria-hidden="true" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
     <path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/>
   </svg>
 );
 const InsightsIcon = () => (
-  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+  <svg aria-hidden="true" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
     <line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/>
     <line x1="6" y1="20" x2="6" y2="14"/>
   </svg>
 );
 const SummaryIcon = () => (
-  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+  <svg aria-hidden="true" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
     <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
     <polyline points="14,2 14,8 20,8"/><line x1="8" y1="13" x2="16" y2="13"/>
     <line x1="8" y1="17" x2="16" y2="17"/><line x1="8" y1="9" x2="11" y2="9"/>
@@ -66,6 +67,7 @@ function ShutdownButton() {
     <button
       onClick={() => (confirming ? shutdownServers() : setConfirming(true))}
       title="Stop the backend and frontend dev servers"
+      aria-live="polite"
       className={`w-full flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium border transition-colors ${
         confirming
           ? "border-rose-600 bg-rose-600 text-white hover:bg-rose-500"
@@ -81,14 +83,14 @@ function ShutdownButton() {
 // ── Full-screen overlay shown once servers are stopped ────────────────────────
 function StoppedOverlay() {
   return (
-    <div className="fixed inset-0 z-50 flex flex-col items-center justify-center gap-3 bg-[#070b14]/95 backdrop-blur-sm text-center px-6">
+    <div role="alertdialog" aria-labelledby="stopped-title" className="fixed inset-0 z-50 flex flex-col items-center justify-center gap-3 bg-[#070b14]/95 backdrop-blur-sm text-center px-6">
       <div className="w-12 h-12 rounded-full border border-rose-800/60 bg-rose-950/40 flex items-center justify-center text-rose-400">
         <PowerIcon />
       </div>
-      <div className="text-slate-200 text-sm font-medium">Servers stopped</div>
+      <div id="stopped-title" className="text-slate-200 text-sm font-medium">Servers Stopped</div>
       <div className="text-slate-500 text-xs max-w-xs">
         The backend and frontend dev servers have been shut down. You can close
-        this tab. Restart with <code className="text-slate-400">bash run.sh</code>.
+        this tab. Restart with <code translate="no" className="text-slate-400">bash run.sh</code>.
       </div>
     </div>
   );
@@ -125,12 +127,14 @@ function ProviderBadge() {
   );
 }
 
+const fmt = new Intl.NumberFormat();
+
 // ── Stat row ──────────────────────────────────────────────────────────────────
 function Stat({ label, value }) {
   return (
     <div className="flex justify-between items-center">
       <span className="text-slate-500 text-xs">{label}</span>
-      <span className="text-slate-300 text-xs font-mono">{value}</span>
+      <span className="text-slate-300 text-xs font-mono tabular-nums">{typeof value === "number" ? fmt.format(value) : value}</span>
     </div>
   );
 }
@@ -169,19 +173,20 @@ function DepthSelector({ graphId }) {
   return (
     <div>
       <div className="text-[10px] uppercase tracking-widest text-slate-500 font-semibold mb-2">
-        Jump to a level
+        Jump to a Level
       </div>
       <div className="flex gap-1">
         <button
           onClick={resetView}
           title="Interactive explore mode"
+          aria-pressed={currentDepth === null}
           className={`flex-1 flex flex-col items-center py-1.5 rounded-lg text-[10px] border transition-colors ${
             currentDepth === null
               ? "border-blue-500/80 bg-blue-900/30 text-blue-300"
               : "border-[#1e2d4a] text-slate-500 hover:text-slate-300 hover:border-slate-500"
           }`}
         >
-          <span className="text-sm">🔍</span>
+          <span aria-hidden="true" className="text-sm">🔍</span>
           <span>Explore</span>
         </button>
         {levels.map(({ depth, label, icon }) => (
@@ -189,18 +194,55 @@ function DepthSelector({ graphId }) {
             key={depth}
             onClick={() => loadDepthView(depth)}
             title={`View at ${label} level`}
+            aria-pressed={currentDepth === depth}
             className={`flex-1 flex flex-col items-center py-1.5 rounded-lg text-[10px] border transition-colors ${
               currentDepth === depth
                 ? "border-blue-500/80 bg-blue-900/30 text-blue-300"
                 : "border-[#1e2d4a] text-slate-500 hover:text-slate-300 hover:border-slate-500"
             }`}
           >
-            <span className="text-sm">{icon}</span>
+            <span aria-hidden="true" className="text-sm">{icon}</span>
             <span>{label}</span>
           </button>
         ))}
       </div>
     </div>
+  );
+}
+
+// ── Lane rail ─────────────────────────────────────────────────────────────────
+// Every lane of a many-lane graph as a list, most connected first — a plain,
+// keyboard-friendly way to jump between lanes without hunting on the canvas.
+function LaneRail() {
+  const { lanes } = useLanes();
+  const rootCount = useFlowStore((s) => s.rootIds.length);
+  const focusLaneId = useFlowStore((s) => s.focusLaneId);
+  const focusLane = useFlowStore((s) => s.focusLane);
+  if (rootCount < LANE_OVERVIEW_MIN || lanes.length === 0) return null;
+  return (
+    <nav aria-labelledby="lane-rail-title">
+      <h3 id="lane-rail-title" className="text-[10px] uppercase tracking-widest text-slate-500 font-semibold mb-2">
+        Lanes ({fmt.format(lanes.length)})
+      </h3>
+      <ul className="max-h-56 overflow-y-auto scroll-contain rounded-lg border border-[#1a2540] bg-[#0f1629] divide-y divide-[#141d33]">
+        {lanes.map((l) => (
+          <li key={l.id}>
+            <button
+              type="button"
+              onClick={() => focusLane(l.id)}
+              aria-current={focusLaneId === l.id ? "true" : undefined}
+              className={`w-full flex items-center gap-2 px-3 py-1.5 text-left text-xs transition-colors ${
+                focusLaneId === l.id ? "bg-blue-900/30 text-blue-200" : "text-slate-300 hover:bg-[#111a30]"
+              }`}
+            >
+              <span aria-hidden="true" className="w-2 h-2 rounded-full shrink-0" style={{ background: `hsl(${l.hue} 80% 58%)` }} />
+              <span translate="no" className="flex-1 truncate">{l.label}</span>
+              <span className="shrink-0 text-slate-500 tabular-nums">{fmt.format(l.count)}</span>
+            </button>
+          </li>
+        ))}
+      </ul>
+    </nav>
   );
 }
 
@@ -229,7 +271,7 @@ export default function Sidebar() {
       <div className="px-5 pt-5 pb-4 border-b border-[#1a2540]">
         <div className="flex items-center gap-2.5 mb-1">
           <div className="w-7 h-7 rounded-lg bg-blue-600 flex items-center justify-center shrink-0">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="white">
+            <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="white">
               <circle cx="12" cy="12" r="3"/>
               <circle cx="5" cy="5" r="2.5"/><circle cx="19" cy="5" r="2.5"/>
               <circle cx="5" cy="19" r="2.5"/><circle cx="19" cy="19" r="2.5"/>
@@ -240,12 +282,13 @@ export default function Sidebar() {
             </svg>
           </div>
           <div className="min-w-0 flex-1">
-            <div className="font-semibold text-white text-sm leading-tight">Flowify AI</div>
+            <div translate="no" className="font-semibold text-white text-sm leading-tight">Flowify&nbsp;AI</div>
             <div className="text-[10px] text-slate-500">Code graph explorer</div>
           </div>
           <button
             onClick={openHelp}
             title="What is this? How do I use it?"
+            aria-label="Help: What Is Flowify?"
             className="shrink-0 w-6 h-6 rounded-full flex items-center justify-center text-[11px] font-semibold text-slate-400 border border-[#1e2d4a] hover:text-slate-100 hover:border-blue-600 hover:bg-blue-950/40 transition-colors"
           >
             ?
@@ -260,16 +303,24 @@ export default function Sidebar() {
       <div className="flex-1 overflow-y-auto px-4 py-4 flex flex-col gap-4">
 
         {/* Repository input */}
+        <form onSubmit={(e) => { e.preventDefault(); if (!loading) ingest(); }} className="flex flex-col gap-4">
         <div>
-          <label className="block text-[10px] uppercase tracking-widest text-slate-500 font-semibold mb-2">
+          <label htmlFor="repo-input" className="block text-[10px] uppercase tracking-widest text-slate-500 font-semibold mb-2">
             {serverMode ? "GitHub / GitLab URL" : "Repository path or git URL"}
           </label>
           <input
-            className="w-full bg-[#0f1629] border border-[#1e2d4a] rounded-lg px-3 py-2 text-sm text-slate-200 placeholder:text-slate-600 focus:outline-none focus:border-blue-500 transition-colors"
-            placeholder={serverMode ? "https://github.com/owner/repo" : "/absolute/path/to/repo or https://github.com/owner/repo"}
+            id="repo-input"
+            name="repo"
+            type={serverMode ? "url" : "text"}
+            inputMode="url"
+            autoComplete="off"
+            spellCheck={false}
+            aria-describedby={error ? "sidebar-error" : undefined}
+            aria-invalid={error ? true : undefined}
+            className="w-full bg-[#0f1629] border border-[#1e2d4a] rounded-lg px-3 py-2 text-sm text-slate-200 placeholder:text-slate-600 focus-visible:outline-none focus-visible:border-blue-500 focus-visible:ring-2 focus-visible:ring-blue-500/40 transition-colors"
+            placeholder={serverMode ? "e.g. https://github.com/owner/repo…" : "e.g. /path/to/repo or https://github.com/owner/repo…"}
             value={repoPath}
             onChange={(e) => setRepoPath(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && ingest()}
           />
           {serverMode && (
             <p className="mt-1.5 text-[10px] text-slate-500 leading-snug">
@@ -282,13 +333,13 @@ export default function Sidebar() {
         {/* Action buttons */}
         <div className="flex gap-2">
           <button
-            onClick={ingest}
-            disabled={loading || !repoPath}
+            type="submit"
+            disabled={loading}
             className="flex-1 bg-blue-600 hover:bg-blue-500 disabled:opacity-40 disabled:cursor-not-allowed rounded-lg px-3 py-2 text-sm font-medium text-white transition-colors"
           >
             {loading ? (
               <span className="flex items-center justify-center gap-2">
-                <svg className="animate-spin" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3">
+                <svg aria-hidden="true" className="animate-spin" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3">
                   <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4"/>
                 </svg>
                 Loading…
@@ -296,13 +347,21 @@ export default function Sidebar() {
             ) : graphId ? "Re-ingest" : "Ingest"}
           </button>
           <button
+            type="button"
             onClick={update}
+            title="Re-ingest only the files changed since the last ingest"
             disabled={!graphId || loading}
             className="px-3 py-2 rounded-lg text-sm font-medium border border-[#1e2d4a] text-slate-400 hover:text-slate-200 hover:border-slate-500 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
           >
-            Sync
+            Sync Changes
           </button>
         </div>
+        {error && (
+          <div id="sidebar-error" role="alert" className="text-xs text-rose-400 bg-rose-950/40 border border-rose-900/60 rounded-lg p-2.5 break-words">
+            {error}
+          </div>
+        )}
+        </form>
 
         {/* Navigation */}
         {graphId && (
@@ -333,7 +392,7 @@ export default function Sidebar() {
             title="View the generated repository summary"
             className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-sm font-medium border border-blue-800/50 bg-blue-950/30 text-blue-300 hover:bg-blue-900/40 hover:border-blue-700 transition-colors"
           >
-            <SummaryIcon /> Repository summary
+            <SummaryIcon /> Repository Summary
           </button>
         )}
 
@@ -344,12 +403,15 @@ export default function Sidebar() {
             title="God nodes, cycles, dead code, and cross-module couplings"
             className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-sm font-medium border border-purple-800/50 bg-purple-950/30 text-purple-300 hover:bg-purple-900/40 hover:border-purple-700 transition-colors"
           >
-            <InsightsIcon /> Graph insights
+            <InsightsIcon /> Graph Insights
           </button>
         )}
 
         {/* Drill-down view selector */}
         {graphId && <DepthSelector graphId={graphId} />}
+
+        {/* Lanes (many-lane graphs only) */}
+        {graphId && <LaneRail />}
 
         {/* Graph stats */}
         {graphId && (
@@ -388,7 +450,7 @@ export default function Sidebar() {
                 }`}
               >
                 <CopyIcon />
-                {exportStatus === "copied" ? "Copied!" : "Mermaid"}
+                <span aria-live="polite">{exportStatus === "copied" ? "Copied!" : "Mermaid"}</span>
               </button>
               <button
                 onClick={downloadReport}
@@ -410,7 +472,7 @@ export default function Sidebar() {
               }`}
             >
               <CopyIcon />
-              {exportStatus === "copied" ? "Copied!" : "Copy for LLM (no API key needed)"}
+              <span aria-live="polite">{exportStatus === "copied" ? "Copied!" : "Copy for LLM (No API Key Needed)"}</span>
             </button>
           </div>
         )}
@@ -455,13 +517,6 @@ export default function Sidebar() {
           </div>
         </div>
       </div>
-
-      {/* Error */}
-      {error && (
-        <div className="mx-4 mb-4 text-xs text-rose-400 bg-rose-950/40 border border-rose-900/60 rounded-lg p-2.5 break-words">
-          {error}
-        </div>
-      )}
 
       {/* Footer — shut down servers (local mode only; the backend rejects
           POST /shutdown with 404 in server mode, so hide the affordance too) */}
