@@ -2,7 +2,7 @@
 
 > **Interactive GraphRAG code explorer** — ingest any repository into a dual-layer call graph, navigate it visually, and answer natural-language questions grounded in the actual graph structure.
 
-Flowify ingests a codebase through three phases (repo context → AST/semantic enrichment → continuous learning), renders it with ReactFlow + Dagre auto-layout, and lets you explore and query it through a dark-themed UI. The LLM backend is fully pluggable — Ollama (local, free) is recommended for development; IBM watsonx, Claude, OpenAI, and others are supported.
+Flowify ingests a codebase through three phases (repo context → AST/semantic enrichment → continuous learning), renders it with ReactFlow, and lets you explore and query it through a dark-themed UI. The LLM backend is fully pluggable — Ollama (local, free) is recommended for development; Claude, OpenAI, GitHub Copilot, and any OpenAI-compatible endpoint are supported — and every graph is also reachable by AI agents through an MCP server and a plain JSON export.
 
 **Live demo**: [flowify-7vcn.onrender.com](https://flowify-7vcn.onrender.com/) — paste a public git URL and explore. Hosted on Render's free tier, so it sleeps after 15 minutes idle (~30-60s cold start on the first request).
 
@@ -10,13 +10,16 @@ Flowify ingests a codebase through three phases (repo context → AST/semantic e
 
 ## Features
 
-- **Interactive call graph** — dual-layer graph (function-level + module-level) with Dagre auto-layout. Drill down from module clusters → source files → individual functions/classes.
+- **Interactive call graph** — dual-layer graph (function-level + module-level). Drill down from module clusters → source files → individual functions/classes.
+- **Lane overview → focus** — a repo with many top-level modules opens as one card per lane, laid out left to right by call direction (wrapping like text) so the whole architecture fits one screen. Select a lane to open it in full, with the lanes it calls and is called by as neighbouring cards you can hop between; a sidebar **Lanes** list and the **Overview** breadcrumb keep navigation one click away. Repos with only a few roots keep the classic stacked view.
 - **Per-node descriptions** — every node shows a one-line description of what that function/class/module does, derived from its docstring or code via AST analysis (or an LLM when one is configured).
 - **Semantic edge types** — edges are colour-coded: blue = CALLS, green = EXPOSES_API, purple = USES_DB, yellow = EMITS_EVENT, red = CONSUMES_EVENT.
 - **Change Impact analysis** — click any function to see its risk level (low/medium/high/critical), caller list, DB operations it touches, and affected modules.
 - **Graph-grounded NLP queries** — ask questions in plain English; answers are anchored to real graph traversal with a "Grounded in N nodes" badge, numbered call-chain steps, and 👍/😐/👎 feedback. Call edges are resolved through a scoped, confidence-ranked matcher (self-call → attribute type → receiver class → module import → same-file → unique-repo-wide), not simple name matching — an ambiguous call is dropped rather than guessed, so the cited call chain reflects edges that actually exist.
 - **Continuous learning** — query patterns and feedback adjust relevance scores and build a terminology map over time.
 - **Scales to large repos** — viewport culling, memoized nodes, and hover handling that only touches the nodes it affects keep the graph view responsive well past a thousand nodes; a whole-repo view is capped at 600 rendered nodes (highest-degree kept) with an on-screen "Showing N of M" banner instead of silently truncating or freezing the tab.
+- **Guarded ingest on small hosts** — on a hosted (`server`) instance, oversized repos are rejected fast with a clear message instead of crashing the process; see [Ingest limits](#ingest-limits).
+- **Accessible UI** — labelled dialogs with focus trap and Escape, keyboard-operable lane cards and tabs, live regions for loading/errors, `prefers-reduced-motion` honoured.
 
 ---
 
@@ -112,7 +115,6 @@ The key lives only in that request's context and is never logged or persisted. N
 |---|---|---|
 | *(unset)* | **Auto-detect** — Ollama first, then cloud keys | — |
 | `ollama` | Ollama (local) | *(none — just needs `ollama serve`)* |
-| `bob` | IBM watsonx / Bob | `BOB_API_KEY`, `BOB_API_URL` |
 | `claude` | Anthropic Claude | `ANTHROPIC_API_KEY` |
 | `openai` | OpenAI | `OPENAI_API_KEY` |
 | `copilot` | GitHub Copilot | `GITHUB_TOKEN` |
@@ -133,8 +135,6 @@ All provider responses are cached to `_store/llm_cache/` keyed by SHA256 of the 
 | `OLLAMA_HOST` | `http://localhost:11434` | Ollama server URL (`https://ollama.com` for Cloud) |
 | `OLLAMA_MODEL` | *(auto-pick best installed)* | Force a specific Ollama model (required for Cloud) |
 | `OLLAMA_API_KEY` | *(unset)* | Ollama Cloud API key, sent as `Authorization: Bearer` |
-| `BOB_API_KEY` | *(unset)* | IBM Bob / watsonx API key |
-| `BOB_API_URL` | IBM endpoint | IBM Bob API URL |
 | `ANTHROPIC_API_KEY` | *(unset)* | Anthropic Claude API key |
 | `ANTHROPIC_MODEL` | `claude-3-5-haiku-20241022` | Claude model |
 | `OPENAI_API_KEY` | *(unset)* | OpenAI API key |
@@ -153,7 +153,9 @@ All provider responses are cached to `_store/llm_cache/` keyed by SHA256 of the 
 | `FLOWIFY_RATE_LIMIT_PER_MIN` | `6` | `server` mode only: per-IP cap on ingest/query calls |
 | `FLOWIFY_LLM_CALLS_PER_DAY` | `300` | `server` mode only: global daily cap on query/flow-summary LLM calls — protects a shared server-side key from being drained by many visitors; returns 429 once hit |
 | `FLOWIFY_MODULARITY_LIMIT` | `800` | Above this many code-symbol nodes in one connected component, module clustering skips community detection and groups by directory instead (much cheaper, avoids OOM on large repos) |
-| `FLOWIFY_MAX_NODES` | `20000` | `server` mode only: hard reject a repo above this many parsed nodes — a rare backstop, not the primary large-repo defense (that's the modularity limit above) |
+| `FLOWIFY_MAX_SOURCE_BYTES` | `157286400` (150 MB) | `server` mode only: reject a repo whose supported source files total more than this, before any parsing starts |
+| `FLOWIFY_MAX_NODES` | `20000` | `server` mode only: abort as soon as the running parsed-node count passes this (checked after every file while parsing) |
+| `FLOWIFY_MAX_PARSE_SECONDS` | `60` | `server` mode only: abort parsing once it has run this long — CPU, not memory, is the tighter limit on a small free instance |
 
 ---
 
@@ -207,6 +209,16 @@ build, and a Docker build on every push. `docker-publish.yml` pushes
 `ghcr.io/<owner>/<repo>` on version tags — free for public repos, no extra
 secret required. `deploy-render.yml` is only needed if you've turned off
 Render's default GitHub auto-deploy.
+
+### Ingest limits
+
+On a hosted (`FLOWIFY_MODE=server`) instance three independent guards protect the process, all off in `local` mode:
+
+1. **Source size** — `FLOWIFY_MAX_SOURCE_BYTES`, a directory walk before any parsing (a fraction of a second even for thousands of files).
+2. **Node count** — `FLOWIFY_MAX_NODES`, checked after every file, so a dense repo is rejected as soon as it crosses the line rather than after a full parse.
+3. **Parse time** — `FLOWIFY_MAX_PARSE_SECONDS`, likewise checked per file.
+
+A rejection returns HTTP 413 with the measured value, the limit that was hit, and the local-ingest escape hatch. `GET /limits` reports the active thresholds so a client can warn before submitting. The defaults are reasoned estimates for a 512 MB / shared-CPU instance, not measured values for your host — tune them after ingesting a few real repos.
 
 ---
 
@@ -271,6 +283,7 @@ and the built frontend use. See the router-mounting comment at the top of
 | `POST` | `/feedback` | `{graph_id, query_id, rating}` | Feedback (feeds continuous learning) |
 | `POST` | `/update` | `{graph_id}` | Re-ingests changed files via git diff |
 | `GET` | `/provider_info` | — | Active LLM provider name + model |
+| `GET` | `/limits` | — | Active ingest thresholds (`null` outside server mode) |
 
 ### Analysis endpoints
 
@@ -299,7 +312,7 @@ All four auto-build their metadata on demand for graphs ingested before the feat
 |---|---|---|
 | `POST` | `/mcp/ingest` | Idempotent; returns stable `repo_id` from SHA256 of path |
 | `POST` | `/mcp/query` | Structured function list + execution path |
-| `POST` | `/bob/graph` | Full Bob-ready graph payload (CLI / agent use) |
+| `POST` | `/agent/graph` | Full agent-ready graph payload (CLI / agent use) |
 | `GET` | `/mcp/find_node?graph_id=&name=` | Find code nodes by (partial) name, with summaries |
 | `GET` | `/mcp/shortest_path?graph_id=&source=&target=` | Shortest call path between two functions, addressed by name |
 | `GET` | `/mcp/search_rationale?graph_id=&query=&marker=` | Search extracted TODO/FIXME/HACK/WHY/NOTE comments |
@@ -318,10 +331,10 @@ cd mcp_server
 # restart VS Code, then ask your AI assistant: "What tools do you have available?"
 ```
 
-Bob CLI (from `backend/`):
+Agent CLI (from `backend/`):
 
 ```bash
-python -m app.bob_graph_cli --repo-path /path/to/repo --depth 3
+python -m app.graph_cli --repo-path /path/to/repo --depth 3
 ```
 
 See [`mcp_server/README.md`](mcp_server/README.md) for full setup details.
