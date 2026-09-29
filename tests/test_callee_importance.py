@@ -1,5 +1,10 @@
-from backend.app.models import FunctionNode  # noqa: F401  (models import must come first)
-from backend.app import graph_analytics, main
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent.parent / "backend"))
+
+from app.models import FunctionNode  # noqa: F401  (models import must come first)
+from app import graph_analytics, main
 
 
 def test_importance_scores_rank_central_nodes_higher():

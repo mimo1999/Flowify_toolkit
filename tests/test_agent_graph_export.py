@@ -1,7 +1,7 @@
 import sys
 from pathlib import Path
 
-sys.path.insert(0, "backend")
+sys.path.insert(0, str(Path(__file__).parent.parent / "backend"))
 
 from app.agent_export import build_agent_graph_response
 
