@@ -43,30 +43,34 @@
 
 ### The Problem
 
-Large codebases are hard to understand:
+AI coding agents now deliver in the order of 1,000+ lines per feature change or addition. Those changes are still reviewed manually by the developer and the approver, and review attention is spread evenly across them:
 
-- A new engineer joining a team of 10 spends **2–4 weeks** just tracing how request paths connect before they can contribute.
-- Senior engineers context-switching between repos must constantly re-derive "what calls what" before diagnosing a bug.
-- Code review tools show you diffs, not **causation**: which downstream functions does this change affect?
-- Grep and IDE "Find References" are file-level; they don't surface the *call chain*, *ownership*, or *architectural role* of a function.
+- A minimal change in a dead function that nothing calls any more takes the same bandwidth to review as a change to core functionality that can cause a production outage if it is not reviewed properly.
+- Code review tools show diffs, not **causation**: they do not say which upstream callers and downstream calls a change touches, or whether a problem would cascade or end as a harmless dead end (a log line, say).
+- Grep and IDE "Find References" are file-level; they don't surface the *call chain*, the *blast radius* or the *architectural role* of a function, and nobody runs them on 1,000 lines.
+- Reviewing AI agents have the same problem as people: no signal for where in a large change to spend their limited context and time.
 
 ### What Flowify Solves
 
-Flowify ingests a repository once and produces an **interactive, navigable call graph** that answers:
+Flowify builds a static flow graph of the entire codebase up front and updates it incrementally from git as changes land. For any commit, PR or change it checks the graph, finds the upstream and downstream dependencies of the change, and lists the changes **ranked by criticality**, so developers and reviewer AI agents know where to look and where to spend the most time. The same interactive graph is used to plan features, keeping planned changes modular and the blast radius small.
 
 | Question | How Flowify answers it |
 |---|---|
-| "Where does this repo start?" | Entry-point heuristics surface `main.py`, `app.py`, CLI scripts |
-| "What does this function call?" | Expand any node to see its callees one hop at a time |
-| "How does authentication work?" | Natural-language query → BFS subgraph → LLM explanation |
-| "What changed and what does it affect?" | Incremental git-diff re-ingestion, re-resolved call graph |
-| "Who does all the persistence?" | Query "save to database" → relevant nodes highlighted |
+| "Which of these changed functions deserve the most review time?" | Changed functions ranked by severity: how many functions depend on them, whether an API endpoint does, whether any test reaches them |
+| "If this change is wrong, what breaks?" | Upstream callers, transitively; the review screen and `GET /review` give each caller's call site and the rule that linked it |
+| "Does it cascade or is it a dead end?" | Dependent counts and API reach separate core paths from leaves; unused functions surface in dead-code detection |
+| "What did this change forget to update?" | Callers and tests of changed code that are not in the diff |
+| "How big would this planned change be?" | The interactive graph, dry-run trace and impact view show the blast radius before any code is written |
+| "Where does this repo start?" / "What does this function call?" | Entry-point heuristics; expand any node one hop at a time |
+
+The graph is static and approximate (roughly half of real calls are resolved, see [accuracy](accuracy.md)). Calls it cannot pin to one target are reported as *unconfirmed* callers instead of being hidden, so a short list says where to start looking, never that a change is safe.
 
 ### Target Users
 
-- **New engineers** onboarding to an unfamiliar codebase.
-- **Tech leads** performing architectural reviews or impact analysis.
-- **AI-assisted development** workflows — the "Copy context for LLM" button exports the relevant subgraph as a structured markdown block to paste into any chat interface.
+- **Reviewers and approvers** of large, agent-generated changes, who need to know where to spend their time.
+- **Reviewing AI agents**, which can read the same ranked list as JSON (`GET /review`).
+- **Authors and planners**, who check a change before asking for review and use the graph to keep a feature modular.
+- **Tech leads** doing architectural reviews or impact analysis. New engineers onboarding to an unfamiliar codebase benefit from the same graph.
 
 ---
 

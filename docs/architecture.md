@@ -355,13 +355,6 @@ export FLOWIFY_STORE="_store"  # Storage directory
 - Recommendation system
 - A/B testing framework
 
-## Documentation
-
-- `docs/phase1_implementation.md` — Repository Intelligence Layer
-- `docs/phase2_implementation.md` — Semantic Graph Enrichment
-- `docs/phase3_implementation.md` — Continuous Learning System
-- `docs/llm_ingestion_framework.md` — LLM Integration Framework
-
 ## Validation
 
 All three phases validated and working:

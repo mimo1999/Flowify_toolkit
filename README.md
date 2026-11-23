@@ -1,20 +1,37 @@
 # Flowify AI
 
-> **Interactive GraphRAG code explorer** — ingest any repository into a dual-layer call graph, navigate it visually, and answer natural-language questions grounded in the actual graph structure.
+> **Know where to look in a change.** Flowify keeps a static flow graph of your whole codebase and ranks every change in a commit or PR by how far it can cascade, so reviewers, human and AI, spend their time on the code that can cause an outage and not on a dead function.
 
-Flowify ingests a codebase through three phases (repo context → AST/semantic enrichment → continuous learning), renders it with ReactFlow, and lets you explore and query it through a dark-themed UI. The LLM backend is fully pluggable — Ollama (local, free) is recommended for development; Claude, OpenAI, GitHub Copilot, and any OpenAI-compatible endpoint are supported — and every graph is also reachable by AI agents through an MCP server and a plain JSON export.
+AI coding agents now deliver 1,000+ lines per feature change. Those lines are still reviewed by a developer and an approver, and the attention is spread evenly: a minimal change in a function nothing calls any more costs the same review bandwidth as a change to core logic that can cause a production outage if it is missed. A diff shows what changed, not what depends on it.
+
+Flowify builds a static flow graph of the entire codebase up front and updates it incrementally from git as changes land. For any commit, PR or working-copy change it looks the changed functions up in the graph and finds their upstream and downstream dependencies: if something is wrong here, does it cascade through core paths, or end at a dead end such as a log statement? It lists the changes ranked by criticality, so developers and reviewing AI agents know where to look and where to spend the most time. The same graph helps plan features: explore it interactively before writing code to keep planned changes modular and their blast radius small. The graph is static and resolves roughly half of real calls; calls it cannot pin down are reported as unconfirmed instead of hidden, so a short list is a place to start, never proof of safety ([accuracy](docs/accuracy.md)).
+
+Under the hood, Flowify ingests a codebase through three phases (repo context → AST/semantic enrichment → continuous learning), renders it with ReactFlow, and lets you explore and query it through a dark-themed UI. The LLM backend is fully pluggable — Ollama (local, free) is recommended for development; Claude, OpenAI, GitHub Copilot, and any OpenAI-compatible endpoint are supported — and every graph is also reachable by AI agents through an MCP server and a plain JSON export.
 
 **Live demo**: [flowify-7vcn.onrender.com](https://flowify-7vcn.onrender.com/) — paste a public git URL and explore. Hosted on Render's free tier, so it sleeps after 15 minutes idle (~30-60s cold start on the first request).
 
 ---
 
+## Reviewing a change (local checkouts)
+
+1. **Pick**: Review opens on a queue of branches ahead of `main`, ranked by their riskiest change, plus your own working copy.
+2. **Triage**: a branch's changes are grouped into *Must check*, *Worth a glance* and *Skim*, under a one-line verdict (must-check count, callers it breaks, untested changes, "could be split").
+3. **Verify**: each change leads with static contract checks (a caller that no longer binds, a redefinition, a changed default), optional Claude notes that must quote the code they are about, the diff, and the callers the change did not update. `j`/`k` move, `x` checks, `f` flags.
+4. **Finish**: one click marks every low-risk change skimmed; *Finish* copies a review summary for the PR. After the author pushes again, only the changes edited since you checked are shown.
+5. **Authors** check their working copy first: run the tests that reach each must-check change, or leave a note, saved to `.flowify/review.json`.
+
+Scoring, checks and limits: [docs/change-risk.md](docs/change-risk.md).
+
 ## Features
 
 - **Interactive call graph** — dual-layer graph (function-level + module-level). Drill down from module clusters → source files → individual functions/classes.
+- **Human-scale by default** — module lanes are merged to about a dozen, a focused lane shows its 60 most important items (with "Show all"), and importance is a percentile within the repo (top 5% "high"), so it stays meaningful on an 80K-node codebase.
 - **Lane overview → focus** — a repo with many top-level modules opens as one card per lane, laid out left to right by call direction (wrapping like text) so the whole architecture fits one screen. Select a lane to open it in full, with the lanes it calls and is called by as neighbouring cards you can hop between; a sidebar **Lanes** list and the **Overview** breadcrumb keep navigation one click away. Repos with only a few roots keep the classic stacked view.
+- **Dry-run trace** — pick where a request or command starts (API endpoints and entry functions are suggested, or search by name) and Flowify walks everything it calls, in the order the code calls it, across files and modules. Each step is tagged with the control flow it sits in (`if / else`, `loop`, `try`, `on error`), module crossings are marked, repeats and cycles are shown instead of followed, and calls the graph could not pin to one target are counted as *ambiguous* rather than hidden. Step through it one function at a time, or view the whole path at once; copy it as text for a review or an LLM. The trace tree shows a bounded number of steps (fan-out shrinks with depth), so it stays readable on any repo.
+- **Measured accuracy** — the call graph is scored against what really runs (a repo's own test suite under a call tracer): about 96% of the edges the tests could judge are correct on click and jinja, 83% on flask, and the graph contains roughly half of the calls that really happen. Every edge shows its confidence and why it was chosen, and change-impact analysis lists *possible callers* the graph could not resolve. Method, per-tier numbers and limits: [docs/accuracy.md](docs/accuracy.md); reproduce with `benchmarks/accuracy/measure.py`.
 - **Per-node descriptions** — every node shows a one-line description of what that function/class/module does, derived from its docstring or code via AST analysis (or an LLM when one is configured).
 - **Semantic edge types** — edges are colour-coded: blue = CALLS, green = EXPOSES_API, purple = USES_DB, yellow = EMITS_EVENT, red = CONSUMES_EVENT.
-- **Change Impact analysis** — click any function to see its risk level (low/medium/high/critical), caller list, DB operations it touches, and affected modules.
+- **Change Impact analysis** — type a function under *Find a Function* (or click it) to see who depends on it: direct callers, every upstream dependent, callers the graph could not confirm, and a triage risk level (low → critical) that only ever rises with missing evidence. *Copy Link* shares it. A PR version runs from the CLI or GitHub Action: `python backend/app/pr_impact.py --repo . --base origin/main` (see `.github/workflows/pr-impact.yml`).
 - **Graph-grounded NLP queries** — ask questions in plain English; answers are anchored to real graph traversal with a "Grounded in N nodes" badge, numbered call-chain steps, and 👍/😐/👎 feedback. Call edges are resolved through a scoped, confidence-ranked matcher (self-call → attribute type → receiver class → module import → same-file → unique-repo-wide), not simple name matching — an ambiguous call is dropped rather than guessed, so the cited call chain reflects edges that actually exist.
 - **Continuous learning** — query patterns and feedback adjust relevance scores and build a terminology map over time.
 - **Scales to large repos** — viewport culling, memoized nodes, and hover handling that only touches the nodes it affects keep the graph view responsive well past a thousand nodes; a whole-repo view is capped at 600 rendered nodes (highest-degree kept) with an on-screen "Showing N of M" banner instead of silently truncating or freezing the tab.
@@ -27,7 +44,7 @@ Flowify ingests a codebase through three phases (repo context → AST/semantic e
 
 ### Graph exploration — drill-down from files to functions
 
-After ingestion the graph loads instantly. The **Drill-down View** selector (Explore · Modules · Files · Functions) switches abstraction levels. Each node card shows the file/function name, path, symbol count, and a code-based one-line description.
+After ingestion the graph loads instantly. The **Jump to a Level** selector (Explore · Areas · Functions) switches abstraction levels; Areas are groups found from call patterns, not folders. Each node card shows the file/function name, path, symbol count, and a code-based one-line description.
 
 ![Flowify graph — Files depth view showing 103 source files](docs/screenshots/04_files_depth.png)
 
@@ -154,6 +171,9 @@ All provider responses are cached to `_store/llm_cache/` keyed by SHA256 of the 
 | `FLOWIFY_LLM_CALLS_PER_DAY` | `300` | `server` mode only: global daily cap on query/flow-summary LLM calls — protects a shared server-side key from being drained by many visitors; returns 429 once hit |
 | `FLOWIFY_MODULARITY_LIMIT` | `800` | Above this many code-symbol nodes in one connected component, module clustering skips community detection and groups by directory instead (much cheaper, avoids OOM on large repos) |
 | `FLOWIFY_MAX_SOURCE_BYTES` | `157286400` (150 MB) | `server` mode only: reject a repo whose supported source files total more than this, before any parsing starts |
+| `FLOWIFY_EXCLUDE_DIRS` | `server`: `tests,test,__tests__,spec,benchmarks,benchmark,examples,example,docs,doc,scripts`; `local`: none | Comma-separated directory names skipped during parsing (empty string = skip nothing). Including `tests` also skips `test_*.py`, `*_test.py` and `conftest.py`. On a large repo this alone removes ~40% of nodes |
+| `FLOWIFY_MAX_LANES` / `FLOWIFY_TARGET_LANES` | `20` / `12` | Above this many directory groups, modules are merged by path prefix down to about the target, so the overview stays readable |
+| `FLOWIFY_LLM_INGEST_MAX_NODES` | `500` | The LLM ingestion prompt and result describe only this many of the most-connected nodes |
 | `FLOWIFY_MAX_NODES` | `20000` | `server` mode only: abort as soon as the running parsed-node count passes this (checked after every file while parsing) |
 | `FLOWIFY_MAX_PARSE_SECONDS` | `60` | `server` mode only: abort parsing once it has run this long — CPU, not memory, is the tighter limit on a small free instance |
 
@@ -278,6 +298,9 @@ and the built frontend use. See the router-mounting comment at the top of
 | `GET` | `/entry_points` | `?graph_id=&max_count=4` | Root file nodes for the initial view |
 | `GET` | `/expand` | `?graph_id=&node_id=&action=callees\|functions` | `{children, edges}` |
 | `GET` | `/graph` | `?graph_id=&depth=1..3` | Full graph at the requested depth |
+| `GET` | `/trace_path` | `?graph_id=&source=&target=` | Shortest call chain between two functions, in the `/trace` step format (`stats.found` is false when none exists) |
+| `GET` | `/trace_starts` | `?graph_id=&q=&limit=` | Suggested trace starts (entry points ranked by reach), or a name search when `q` is set |
+| `GET` | `/trace` | `?graph_id=&start=&max_depth=6&max_steps=80&fanout=6` | Source-ordered dry run from `start`: steps with depth, call line, control-flow context, module, ambiguous calls |
 | `GET` | `/impact` | `?graph_id=&node_id=` | Change impact analysis for a function |
 | `POST` | `/query` | `{graph_id, query}` | `{explanation, execution_steps, graph_nodes_consulted}` |
 | `POST` | `/feedback` | `{graph_id, query_id, rating}` | Feedback (feeds continuous learning) |
@@ -301,7 +324,7 @@ and the built frontend use. See the router-mounting comment at the top of
 |---|---|---|
 | `GET` | `/knowledge/{graph_id}` | Docs (README/ADR/RFC/wikis) as nodes, linked to the code they reference, each edge with provenance (source/confidence/evidence) |
 | `GET` | `/node_references?graph_id=&node_id=` | Everything the knowledge layer knows about one node — referencing docs, TODO/FIXME/HACK/WHY rationale in its source span, call-edge provenance |
-| `GET` | `/graph_analytics/{graph_id}?refresh=` | Centrality metrics, god nodes, cycles, articulation-point bridges, dead-code candidates, surprising cross-module couplings |
+| `GET` | `/graph_analytics/{graph_id}?refresh=` | Centrality metrics, god nodes, cycles, articulation-point bridges, functions with no static callers (not the same as unused; measured in docs/accuracy.md), surprising cross-module couplings |
 | `GET` | `/architecture_report/{graph_id}?format=markdown\|json` | The full GRAPH_REPORT.md architecture report |
 
 All four auto-build their metadata on demand for graphs ingested before the feature existed, and are cached at ingest time otherwise.
