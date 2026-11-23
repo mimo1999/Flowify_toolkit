@@ -1,0 +1,37 @@
+[
+  {
+    "file": "vllm/utils/math_utils.py",
+    "line": 49,
+    "kind": "shadowing redefinition",
+    "what": "second `def cdiv` at the bottom of the module overrides the correct one; (a+b)//b is off by one whenever a is an exact multiple of b (cdiv(4,2)==3, cdiv(0,2)==1)",
+    "symptom": "every block/page/size computation that uses cdiv (320 modules) over-allocates or mis-sizes"
+  },
+  {
+    "file": "vllm/logger.py",
+    "line": 362,
+    "kind": "function override of a factory",
+    "what": "a later `def init_logger` replaces the real one and no longer patches in vLLM's convenience methods (info_once, warning_once, debug_once, ...)",
+    "symptom": "AttributeError the first time any module calls logger.*_once; init_logger(__name__) itself still works so imports succeed"
+  },
+  {
+    "file": "vllm/utils/torch_version.py",
+    "line": 19,
+    "kind": "wrong comparison semantics",
+    "what": "version check became a string comparison: '2.13.0' >= '2.6.0' is False because '1' < '6'",
+    "symptom": "every is_torch_equal_or_newer(...) gate (15 modules) treats torch >= 2.10 as older than 2.6-2.9 and takes legacy/fallback paths"
+  },
+  {
+    "file": "vllm/utils/mem_constants.py",
+    "line": 18,
+    "kind": "numeric constant slip",
+    "what": "GiB_bytes is 1000 MiB (1,048,576,000) instead of 2**30 (1,073,741,824), 2.3% short",
+    "symptom": "every GiB-denominated memory budget/profile (15 modules) is silently off; KV cache sizing and OOM margins drift"
+  },
+  {
+    "file": "vllm/v1/core/kv_cache_utils.py",
+    "line": 737,
+    "kind": "silent correctness loss behind a misleading comment",
+    "what": "block hash ignores extra_keys (LoRA id, multimodal hashes, cache salt) while the signature and docstring still advertise them; the comment's claim is false",
+    "symptom": "prefix cache hits across different LoRA adapters / images / salts: wrong KV reused, silently wrong outputs"
+  }
+]
