@@ -83,51 +83,57 @@ def _get_call_name(func: ast.AST) -> str | None:
     return None
 
 
+def index_invocations(function_edges: List[FunctionEdge]) -> Dict[str, Set[str]]:
+    """source_id -> ids it calls. Built once per repo and shared by every
+    module, so grouping stays linear in the repo instead of rescanning all
+    edges per module."""
+    calls: Dict[str, Set[str]] = defaultdict(set)
+    for edge in function_edges:
+        if edge.relationship == "INVOKES" or edge.type == "CALLS":
+            calls[edge.source_id].add(edge.target_id)
+    return calls
+
+
 def group_control_flow_functions(
-    function_nodes: List[FunctionNode],
-    function_edges: List[FunctionEdge],
-    module_functions: List[str]
+    function_nodes_by_id: Dict[str, FunctionNode],
+    calls_by_source: Dict[str, Set[str]],
+    module_functions: List[str],
 ) -> Dict[str, Dict[str, List[str]]]:
     """Group functions within a module by control flow patterns.
-    
-    Returns dict mapping function_id to its control flow groups.
-    Each group maps pattern type to list of called function IDs.
+
+    Cost is proportional to the module's own size. Returns dict mapping
+    function_id to its control flow groups; each group maps pattern type to
+    the list of called function IDs in the same module.
     """
-    # Build lookup structures
-    func_by_id = {n.id: n for n in function_nodes if n.id in module_functions}
-    func_by_name = defaultdict(list)
+    func_by_name: Dict[str, List[str]] = defaultdict(list)
     for fid in module_functions:
-        node = func_by_id.get(fid)
+        node = function_nodes_by_id.get(fid)
         if node:
             func_by_name[node.name].append(fid)
-    
-    # Build call graph within module
-    module_calls: Dict[str, Set[str]] = defaultdict(set)
-    for edge in function_edges:
-        if _is_invocation(edge.model_dump()) and edge.source_id in module_functions and edge.target_id in module_functions:
-            module_calls[edge.source_id].add(edge.target_id)
-    
-    # Analyze each function's control flow
+
     result: Dict[str, Dict[str, List[str]]] = {}
-    
-    for fid, node in func_by_id.items():
+
+    for fid in module_functions:
+        node = function_nodes_by_id.get(fid)
+        if node is None:
+            continue
         patterns = _analyze_function_control_flow(node)
         if not patterns:
             continue
-        
+
         # Map pattern call names to actual function IDs in this module
+        called = calls_by_source.get(fid, ())
         resolved_patterns: Dict[str, List[str]] = {}
         for pattern_type, call_names in patterns.items():
-            resolved_ids = []
-            for call_name in call_names:
-                # Find matching function IDs
-                for candidate_id in func_by_name.get(call_name, []):
-                    if candidate_id in module_calls.get(fid, set()):
-                        resolved_ids.append(candidate_id)
-            
+            resolved_ids = [
+                candidate_id
+                for call_name in call_names
+                for candidate_id in func_by_name.get(call_name, ())
+                if candidate_id in called
+            ]
             if resolved_ids:
                 resolved_patterns[pattern_type] = resolved_ids
-        
+
         if resolved_patterns:
             result[fid] = resolved_patterns
     

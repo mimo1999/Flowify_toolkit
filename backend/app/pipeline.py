@@ -7,7 +7,7 @@ from typing import Dict, List
 
 import networkx as nx
 
-from . import llm_provider, storage, graph_builder, ingestion, module_abstractor, git_updater, llm_ingestion, learning, knowledge, graph_analytics
+from . import llm_provider, storage, graph_builder, ingestion, trace, module_abstractor, git_updater, llm_ingestion, learning, knowledge, graph_analytics
 from .errors import RepoLimitError, RepoSourceTooLargeError, RepoTooLargeError, RepoTooSlowError
 from .models import (
     GraphPayload, FunctionNode, RepositoryContext, SemanticMetadata, SemanticEdge,
@@ -455,8 +455,10 @@ def ingest(
         # docstring) rather than checked once here after the fact, so a large
         # repo is rejected as soon as the budget is hit instead of after
         # spending the memory to fully parse it.
+        resolution_stats: dict = {}
         g, function_nodes, function_edges = graph_builder.build_function_graph(
             repo_path, max_nodes=max_nodes, max_seconds=max_parse_seconds,
+            stats=resolution_stats,
         )
 
         # Phase 2: combined summary + semantic analysis (batched, one pass)
@@ -494,6 +496,7 @@ def ingest(
 
         # Store repository context metadata
         storage.store_meta(graph_id, "repo_context", repo_context.model_dump())
+        storage.store_meta(graph_id, "call_resolution", resolution_stats)
 
         llm_result, llm_prompt = llm_ingestion.ingest_ast_results(
             repo_context,
@@ -515,7 +518,7 @@ def ingest(
 
     # Fix 1: Pre-seed terminology map so the FIRST query benefits from it.
     try:
-        learning.seed_terminology_from_graph(graph_id)
+        learning.seed_terminology_from_graph(graph_id, payload)
     except Exception:
         pass  # Non-critical — ingestion must not fail because of learning
 
@@ -544,6 +547,7 @@ def _build_knowledge_layer(graph_id: str, repo_path: str, payload: GraphPayload)
         print(f"  - knowledge layer failed ({e}); skipping")
     try:
         analytics = graph_analytics.compute_analytics(payload)
+        analytics["stats"]["call_resolution"] = storage.load_meta(graph_id, "call_resolution") or {}
         storage.store_meta(graph_id, "analytics", analytics)
         print(f"[Analytics] {analytics['stats']['cycle_count']} cycles, "
               f"{len(analytics['god_nodes'])} god nodes ranked")
@@ -647,6 +651,7 @@ def update(graph_id: str) -> GraphPayload | None:
         semantic_edges=merged_semantic_edges,
     )
     storage.save(payload)
+    trace.invalidate(graph_id)
     llm_result, llm_prompt = llm_ingestion.ingest_ast_results(
         repo_context,
         merged_nodes,

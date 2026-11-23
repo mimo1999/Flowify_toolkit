@@ -5,9 +5,12 @@ packages them into a prompt, and validates the returned node-level JSON.
 """
 from __future__ import annotations
 
+import heapq
 import json
+import os
 import textwrap
-from typing import Dict, List
+from collections import Counter
+from typing import Dict, List, Optional
 
 from . import llm_provider
 from .models import (
@@ -23,6 +26,27 @@ from .models import (
 
 PROMPT_VERSION = "v1"
 _MAX_CODE_CHARS = 600
+
+# The prompt and the stored result describe individual nodes. On a large repo
+# that is tens of thousands of entries — far beyond any model's context, and
+# ~100 MB of JSON held in memory and then written to the database. Above this
+# many nodes only the most connected ones are described.
+_MAX_NODES = int(os.environ.get("FLOWIFY_LLM_INGEST_MAX_NODES", "500"))
+
+
+def _top_connected(
+    function_nodes: List[FunctionNode],
+    function_edges: List[FunctionEdge],
+    limit: int = _MAX_NODES,
+) -> List[FunctionNode]:
+    """The `limit` nodes with the highest degree (all of them if fewer)."""
+    if len(function_nodes) <= limit:
+        return function_nodes
+    degree: Counter = Counter()
+    for e in function_edges:
+        degree[e.source_id] += 1
+        degree[e.target_id] += 1
+    return heapq.nlargest(limit, function_nodes, key=lambda n: degree[n.id])
 
 
 def _ground_truth_modules(
@@ -101,8 +125,11 @@ def build_prompt(
     module_nodes: List[ModuleNode],
     module_to_functions: Dict[str, List[str]],
     semantic_edges: List[SemanticEdge],
+    prompt_nodes: Optional[List[FunctionNode]] = None,
 ) -> str:
-    """Build the prompt passed to the LLM for node-level ingestion."""
+    """Build the prompt passed to the LLM for node-level ingestion.
+
+    `prompt_nodes` is the subset to describe (default: every node)."""
     function_nodes_by_id = {n.id: n for n in function_nodes}
     module_lookup: Dict[str, ModuleNode] = {}
     module_by_id = {m.id: m for m in module_nodes}
@@ -113,7 +140,10 @@ def build_prompt(
         for fid in fids:
             module_lookup[fid] = module
 
-    ast_nodes = _ast_nodes_payload(function_nodes, function_edges, semantic_edges, module_lookup)
+    ast_nodes = _ast_nodes_payload(
+        function_nodes if prompt_nodes is None else prompt_nodes,
+        function_edges, semantic_edges, module_lookup,
+    )
     ground_truth_modules = _ground_truth_modules(module_nodes, function_nodes_by_id)
 
     return textwrap.dedent(f"""
@@ -175,6 +205,7 @@ def _fallback_result(
     function_nodes: List[FunctionNode],
     module_to_functions: Dict[str, List[str]],
     module_nodes: List[ModuleNode],
+    total_nodes: Optional[int] = None,
 ) -> LLMIngestionResult:
     module_by_id = {m.id: m for m in module_nodes}
     node_to_module = {}
@@ -202,7 +233,9 @@ def _fallback_result(
     return LLMIngestionResult(
         prompt_version=PROMPT_VERSION,
         nodes=nodes,
-        notes=["Fallback result used because no structured LLM response was available."],
+        notes=["Fallback result used because no structured LLM response was available."]
+        + ([f"Described the {len(function_nodes)} most connected of {total_nodes} nodes."]
+           if total_nodes and total_nodes > len(function_nodes) else []),
     )
 
 
@@ -215,6 +248,7 @@ def ingest_ast_results(
     semantic_edges: List[SemanticEdge],
 ) -> tuple[LLMIngestionResult, str]:
     """Run the LLM ingestion stage and return validated JSON plus prompt."""
+    described = _top_connected(function_nodes, function_edges)
     prompt = build_prompt(
         repo_context,
         function_nodes,
@@ -222,11 +256,12 @@ def ingest_ast_results(
         module_nodes,
         module_to_functions,
         semantic_edges,
+        prompt_nodes=described,
     )
-    fallback = _fallback_result(function_nodes, module_to_functions, module_nodes).model_dump()
+    fallback = _fallback_result(described, module_to_functions, module_nodes, len(function_nodes)).model_dump()
     raw = llm_provider.ask_json(prompt, fallback)
     try:
         result = LLMIngestionResult(**raw)
     except Exception:
-        result = _fallback_result(function_nodes, module_to_functions, module_nodes)
+        result = _fallback_result(described, module_to_functions, module_nodes, len(function_nodes))
     return result, prompt

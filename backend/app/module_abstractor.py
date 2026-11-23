@@ -36,6 +36,14 @@ from . import llm_provider, control_flow_analyzer
 # the cost rather than refusing to ingest the repo at all.
 _MODULARITY_NODE_LIMIT = int(os.environ.get("FLOWIFY_MODULARITY_LIMIT", "800"))
 
+# A person can hold roughly a dozen top-level lanes in their head; 600 module
+# nodes (one per directory of a big repo) is a list, not a map. Above
+# _MAX_LANES directory groups they are merged by path prefix down to about
+# _TARGET_LANES.
+_MAX_LANES = int(os.environ.get("FLOWIFY_MAX_LANES", "20"))
+_TARGET_LANES = int(os.environ.get("FLOWIFY_TARGET_LANES", "12"))
+_MIN_LANE_SHARE = 0.005
+
 
 def _is_code_symbol(data: dict) -> bool:
     return data.get("kind") in ("function", "callable", "type") or data.get("type") in ("function", "method", "class")
@@ -50,7 +58,8 @@ def _function_subgraph(g: nx.DiGraph) -> nx.DiGraph:
     return g.subgraph(keep).copy()
 
 
-def _cluster(fg: nx.DiGraph) -> List[List[str]]:
+def _cluster(fg: nx.DiGraph) -> List[Tuple[str, List[str]]]:
+    """Group code symbols into lanes; returns (label, node ids) pairs."""
     if fg.number_of_nodes() == 0:
         return []
     undirected = fg.to_undirected()
@@ -86,7 +95,66 @@ def _cluster(fg: nx.DiGraph) -> List[List[str]]:
     merged: Dict[str, List[str]] = defaultdict(list)
     for cluster in clusters:
         merged[_name_hint(cluster, fg)].extend(cluster)
-    return list(merged.values())
+    return list(_coarsen(merged).items())
+
+
+def _coarsen(groups: Dict[str, List[str]], max_lanes: int = _MAX_LANES, target: int = _TARGET_LANES) -> Dict[str, List[str]]:
+    """Merge directory groups into about `target` lanes by shared path prefix.
+
+    Starts from the first path component and repeatedly splits the largest
+    group by its next component. When a split would overshoot the target, the
+    biggest children stay separate and the rest are folded into one lane named after the biggest of them.
+    A repo already at or below `max_lanes` is returned unchanged.
+    """
+    if len(groups) <= max_lanes:
+        return groups
+
+    def parts(d: str) -> Tuple[str, ...]:
+        return tuple(p for p in d.split("/") if p)
+
+    def size(dirs: List[str]) -> int:
+        return sum(len(groups[d]) for d in dirs)
+
+    buckets: Dict[Tuple[str, ...], List[str]] = defaultdict(list)
+    for d in groups:
+        buckets[parts(d)[:1]].append(d)
+    frozen: set = set()  # "<prefix>/other" folds must not be split again
+
+    while len(buckets) < target:
+        splittable = [
+            (pre, ds) for pre, ds in buckets.items()
+            if pre not in frozen and any(len(parts(d)) > len(pre) for d in ds)
+        ]
+        if not splittable:
+            break
+        pre, ds = max(splittable, key=lambda kv: size(kv[1]))
+        del buckets[pre]
+        children: Dict[Tuple[str, ...], List[str]] = defaultdict(list)
+        for d in ds:
+            children[parts(d)[:len(pre) + 1]].append(d)
+        ordered = sorted(children.items(), key=lambda kv: -size(kv[1]))
+        room = target - len(buckets)
+        if len(ordered) > room and room >= 2:
+            for child, cds in ordered[:room - 1]:
+                buckets[child].extend(cds)
+            folded = ordered[room - 1:]
+            names = ", ".join(child[-1] for child, _ in folded[:2])
+            more = f" +{len(folded) - 2}" if len(folded) > 2 else ""
+            other = pre + (f"({names}{more})",)  # e.g. "vllm/(config, compilation +6)"
+            buckets[other] = [d for _, cds in folded for d in cds]
+            frozen.add(other)
+        else:
+            for child, cds in ordered:
+                buckets[child].extend(cds)
+
+    lanes = {"/".join(pre) or "module": [nid for d in ds for nid in groups[d]] for pre, ds in buckets.items()}
+
+    # Slivers (a stray setup.py, a cmake dir) are noise on a map: fold them together.
+    total = sum(len(ids) for ids in lanes.values())
+    small = [k for k, ids in lanes.items() if len(ids) < total * _MIN_LANE_SHARE]
+    if len(small) >= 2:
+        lanes["misc"] = [nid for k in small for nid in lanes.pop(k)]
+    return lanes
 
 
 def _name_hint(node_ids: List[str], g: nx.DiGraph) -> str:
@@ -115,6 +183,7 @@ def build_modules(
     func_nodes_by_id = {}
     if function_nodes:
         func_nodes_by_id = {n.id: n for n in function_nodes}
+    calls_by_source = control_flow_analyzer.index_invocations(function_edges) if function_edges else {}
     
     # Identify entry point functions from declared entry points
     entry_point_functions = set()
@@ -133,11 +202,10 @@ def build_modules(
     module_to_funcs: Dict[str, List[str]] = {}
     func_to_module: Dict[str, str] = {}
 
-    for cluster in clusters:
+    for hint, cluster in clusters:
         if not cluster:
             continue
         mid = f"mod_{uuid.uuid4().hex[:8]}"
-        hint = _name_hint(cluster, g)
         summaries = [g.nodes[n].get("summary") or g.nodes[n].get("name", "") for n in cluster[:30]]
         meta = llm_provider.summarize_module(hint, summaries)
         
@@ -149,7 +217,7 @@ def build_modules(
         control_flow_groups = {}
         if function_nodes and function_edges:
             cf_analysis = control_flow_analyzer.group_control_flow_functions(
-                function_nodes, function_edges, cluster
+                func_nodes_by_id, calls_by_source, cluster
             )
             # Aggregate control flow groups at module level
             for func_id, patterns in cf_analysis.items():

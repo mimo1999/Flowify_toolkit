@@ -6,7 +6,9 @@ by /graph_analytics, the architecture report, and the MCP analytics tools.
 """
 from __future__ import annotations
 
+import re
 import time
+from bisect import bisect_left, bisect_right
 from collections import Counter, defaultdict
 from typing import Dict, List, Optional
 
@@ -37,32 +39,37 @@ _CRITICALITY_RANK = {"low": 0, "medium": 1, "high": 2, "critical": 3}
 
 
 def importance_scores(node_metrics: Dict[str, dict]) -> Dict[str, float]:
-    """0..1 importance per node from the cached per-node metrics.
+    """0..1 importance per node: its percentile among this repo's nodes.
 
     Blends PageRank (how central), fan-in (how many things depend on it) and
-    criticality. Both structural terms are sqrt-scaled against the repo-wide
-    max so one hub doesn't flatten everything else to ~0; structure carries
-    most of the weight because complexity/criticality are uniform in stub mode.
+    criticality into a raw score, then ranks it. Ranking (not scaling against
+    the repo-wide max) keeps the levels meaningful at any size: on an 80K-node
+    repo a few hubs used to push every other node under the "low" threshold.
+    Structure carries most of the weight because complexity/criticality are
+    uniform in stub mode.
     """
     if not node_metrics:
         return {}
     max_pr = max((m.get("pagerank") or 0.0) for m in node_metrics.values()) or 1.0
     max_in = max((m.get("in_degree") or 0) for m in node_metrics.values()) or 1
     top_crit = max(_CRITICALITY_RANK.values())
-    out = {}
+    raw = {}
     for nid, m in node_metrics.items():
         crit = _CRITICALITY_RANK.get(m.get("criticality"), 0) / top_crit
-        out[nid] = round(
+        raw[nid] = (
             0.45 * (((m.get("pagerank") or 0.0) / max_pr) ** 0.5)
             + 0.35 * (((m.get("in_degree") or 0) / max_in) ** 0.5)
-            + 0.20 * crit,
-            3,
+            + 0.20 * crit
         )
-    return out
+    ranked = sorted(raw.values())
+    n = len(ranked)
+    # mid-rank percentile, so a run of tied scores (e.g. all zero) shares one value
+    return {nid: round((bisect_left(ranked, v) + bisect_right(ranked, v)) / (2 * n), 3) for nid, v in raw.items()}
 
 
 def importance_level(score: float) -> str:
-    return "high" if score >= 0.6 else "medium" if score >= 0.35 else "low"
+    """Top 5% of a repo's nodes are "high", the next 15% "medium"."""
+    return "high" if score >= 0.95 else "medium" if score >= 0.80 else "low"
 
 
 def _call_graph(payload: GraphPayload) -> nx.DiGraph:
@@ -95,6 +102,20 @@ def _node_brief(n: FunctionNode) -> dict:
 def _top_module_dir(file_path: str) -> str:
     parts = file_path.split("/")
     return "/".join(parts[:2]) if len(parts) > 2 else (parts[0] if parts else "")
+
+
+_IDENT = re.compile(r"[A-Za-z_]\w*")
+
+
+def _mentioned_elsewhere(nodes) -> set:
+    """Names that occur in the source of at least two different functions: the definition plus
+    some other place that references it without a resolved call (`key=sort_key`, a registry,
+    a decorator argument)."""
+    seen: Dict[str, int] = defaultdict(int)
+    for n in nodes:
+        for name in set(_IDENT.findall(n.code_snippet or "")):
+            seen[name] += 1
+    return {name for name, c in seen.items() if c >= 2}
 
 
 def compute_analytics(payload: GraphPayload) -> dict:
@@ -199,9 +220,17 @@ def compute_analytics(payload: GraphPayload) -> dict:
         pass
 
     # ── Dead code + high-risk components (single pass over g.nodes) ──────────
-    # Dead code: callables never invoked, not entry-shaped, not tests, not API handlers.
+    # "No static callers": callables the graph shows no call to, not entry-shaped, not tests, not API handlers.
     # High risk: nodes matching 2+ of {large fan-out, heavily depended upon, high complexity}.
     entry_names = {"main", "__init__", "__main__", "setup", "run", "app", "handler"}
+    # Names some function called without the graph being able to pick one target: a function
+    # with such a name is not "uncalled", we just cannot see who calls it.
+    unconfirmed = {u["callee"] for n in payload.function_nodes
+                   for u in (n.adapter_metadata or {}).get("unresolved_calls", ())}
+    # A method sharing its name with one that has callers is most likely an override reached
+    # through the base class, which the graph cannot follow.
+    called_names = {func_by_id[nid].name for nid in g.nodes if nid in func_by_id and in_deg.get(nid, 0)}
+    mentioned = _mentioned_elsewhere(payload.function_nodes)  # passed as a callback, stored, registered
     dead_code = []
     high_risk = []
     for nid in g.nodes:
@@ -219,6 +248,10 @@ def compute_analytics(payload: GraphPayload) -> dict:
                 and "test" not in n.file_path.lower()
                 and meta.get("semantic_kind") not in ("EXPOSES_API", "CONSUMES_EVENT")
                 and not meta.get("decorators")  # decorated functions are usually framework-invoked
+                and n.name not in unconfirmed
+                and n.name not in mentioned
+                and not (n.name.startswith("__") and n.name.endswith("__"))  # invoked by the interpreter
+                and not (n.type == "method" and n.name in called_names)
             )
             if is_dead:
                 dead_code.append(_node_brief(n))

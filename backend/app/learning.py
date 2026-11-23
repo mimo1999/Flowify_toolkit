@@ -88,11 +88,8 @@ def record_query(
     # Extract and update terminology
     terms = _extract_terms(query)
     if terms:
-        # Load payload once and build a node-id → name index for O(1) lookups.
-        payload = storage.load_light(graph_id)
-        name_by_id: Dict[str, str] = {}
-        if payload:
-            name_by_id = {n.id: n.name for n in payload.function_nodes}
+        # Only these five names are needed, so do not load the graph for them.
+        name_by_id = {nid: n["name"] for nid, n in storage.nodes_brief(graph_id, retrieved_nodes[:5]).items()}
         retrieved_names = [name_by_id[nid] for nid in retrieved_nodes[:5] if nid in name_by_id]
 
         for term in terms:
@@ -332,7 +329,7 @@ def update_node_importance(graph_id: str) -> None:
     storage.save(payload)
 
 
-def seed_terminology_from_graph(graph_id: str) -> None:
+def seed_terminology_from_graph(graph_id: str, payload=None) -> None:
     """Pre-populate the terminology map from function names at ingest time.
 
     Without seeding, the map starts empty and needs 1+ real queries before
@@ -343,7 +340,8 @@ def seed_terminology_from_graph(graph_id: str) -> None:
     Skipped when real query data already exists (avoids overwriting learned data
     if the graph is re-ingested after use).
     """
-    payload = storage.load_light(graph_id)
+    if payload is None:
+        payload = storage.load_light(graph_id)
     if not payload or not payload.function_nodes:
         return
 

@@ -133,7 +133,7 @@ def _is_invocation(data: dict) -> bool:
 def _graph_from_payload(payload: GraphPayload) -> nx.DiGraph:
     g = nx.DiGraph()
     for n in payload.function_nodes:
-        g.add_node(n.id, **n.model_dump())
+        g.add_node(n.id, kind=n.kind, type=n.type, name=n.name, file_path=n.file_path, summary=n.summary, semantics=n.semantics)
     for e in payload.function_edges:
         if g.has_node(e.source_id) and g.has_node(e.target_id):
             g.add_edge(e.source_id, e.target_id, type=e.type, relationship=e.relationship)

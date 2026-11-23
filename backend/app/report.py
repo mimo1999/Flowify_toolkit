@@ -165,7 +165,7 @@ def build_report(
 
     dead = analytics.get("dead_code") or []
     if dead:
-        add(_h(3, "Dead Code Candidates (never called)"))
+        add(_h(3, "No Static Callers (the graph shows no call to these; dynamic dispatch is invisible to it)"))
         add("")
         for d in dead[:15]:
             add(f"- `{d['name']}` ({d['file_path']})")
