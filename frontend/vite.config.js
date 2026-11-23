@@ -10,7 +10,7 @@ export default defineConfig({
       // mount in backend/app/main.py), so this only needs to forward the
       // request — no more stripping the /api prefix, which used to be the
       // one thing that made `/api` a dev-only fiction (see HANDOFF.md).
-      "/api": { target: "http://localhost:8000", changeOrigin: true },
+      "/api": { target: process.env.FLOWIFY_API || "http://localhost:8000", changeOrigin: true },
     },
   },
 });

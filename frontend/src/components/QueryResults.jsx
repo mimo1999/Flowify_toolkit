@@ -33,7 +33,7 @@ function ExecutionPath({ steps }) {
   if (!steps || steps.length === 0) return null;
   return (
     <div className="px-5 py-4 border-b border-[#1a2540]">
-      <h3 className="text-[10px] uppercase tracking-widest text-slate-600 font-semibold mb-3">
+      <h3 className="text-[11px] uppercase tracking-widest text-slate-400 font-semibold mb-3">
         Execution Path
       </h3>
       <div className="space-y-0">
@@ -55,18 +55,18 @@ function ExecutionPath({ steps }) {
                   <span className="font-mono text-white/90 truncate flex-1" translate="no">{step.name}</span>
                   {step.semantic_kind !== "CALLS" && (
                     <span
-                      className="text-[8px] font-bold px-1.5 py-0.5 rounded shrink-0"
+                      className="text-[11px] font-bold px-1.5 py-0.5 rounded shrink-0"
                       style={{ background: `${color}22`, color }}
                     >
                       {step.semantic_kind.replace("_", " ")}
                     </span>
                   )}
                 </div>
-                <div className="text-[10px] text-slate-500 truncate mt-0.5 pl-5">
+                <div className="text-[11px] text-slate-500 truncate mt-0.5 pl-5">
                   {step.file_path?.split("/").slice(-2).join("/")}
                 </div>
                 {step.summary && !step.summary.startsWith("(stub)") && (
-                  <div className="text-[10px] text-slate-400 mt-1 pl-5 line-clamp-1">
+                  <div className="text-[11px] text-slate-400 mt-1 pl-5 line-clamp-1">
                     {step.summary}
                   </div>
                 )}
@@ -74,7 +74,7 @@ function ExecutionPath({ steps }) {
               {i < steps.slice(0, 12).length - 1 && (
                 <div className="flex items-center justify-start pl-[22px] my-0.5">
                   <div className="w-px h-3 bg-slate-700" />
-                  <span className="text-[8px] text-slate-600 ml-1">
+                  <span className="text-[11px] text-slate-400 ml-1">
                     {step.edge_label && step.edge_label !== "CALLS" ? step.edge_label : "↓"}
                   </span>
                 </div>
@@ -140,7 +140,7 @@ export default function QueryResults() {
           {graphNodesConsulted > 0 && (
             <div className="flex items-center gap-1.5 mt-1">
               <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
-              <span className="text-[10px] text-emerald-400">Grounded in {graphNodesConsulted} graph nodes</span>
+              <span className="text-[11px] text-emerald-400">Grounded in {graphNodesConsulted} graph nodes</span>
             </div>
           )}
         </div>
@@ -165,7 +165,7 @@ export default function QueryResults() {
 
         {/* Graph-grounded explanation */}
         <div className="px-5 py-4 border-b border-[#1a2540]">
-          <h3 className="text-[10px] uppercase tracking-widest text-slate-600 font-semibold mb-2">
+          <h3 className="text-[11px] uppercase tracking-widest text-slate-400 font-semibold mb-2">
             Graph-Grounded Explanation
           </h3>
           <p className="text-sm text-slate-300 leading-relaxed whitespace-pre-wrap break-words">
@@ -179,7 +179,7 @@ export default function QueryResults() {
         {/* Relevant functions */}
         {visibleNodes.length > 0 && (
           <div className="px-5 py-4">
-            <h3 className="text-[10px] uppercase tracking-widest text-slate-600 font-semibold mb-3">
+            <h3 className="text-[11px] uppercase tracking-widest text-slate-400 font-semibold mb-3">
               Relevant Code
             </h3>
             <ul className="space-y-2">
@@ -193,7 +193,7 @@ export default function QueryResults() {
                     <span className="text-indigo-400 mt-0.5 shrink-0"><FnIcon /></span>
                     <div className="min-w-0">
                       <div className="font-mono text-xs text-white truncate" translate="no">{n.name}</div>
-                      <div className="text-[10px] text-slate-500 truncate mt-0.5">{n.file_path}</div>
+                      <div className="text-[11px] text-slate-500 truncate mt-0.5">{n.file_path}</div>
                       {n.summary && !n.summary.startsWith("(stub)") && (
                         <div className="text-[11px] text-slate-400 mt-1.5 line-clamp-2 leading-relaxed">
                           {n.summary}
@@ -220,7 +220,7 @@ export default function QueryResults() {
 
         {queryId && (
           <div role="group" aria-labelledby="feedback-label" className="flex items-center gap-2">
-            <span id="feedback-label" className="text-slate-600 text-xs flex-1">Helpful?</span>
+            <span id="feedback-label" className="text-slate-400 text-xs flex-1">Helpful?</span>
             {[
               { r: "helpful",   e: "👍", label: "Helpful", active: "bg-emerald-900/60 border-emerald-700 text-emerald-300" },
               { r: "neutral",   e: "😐", label: "Neutral", active: "bg-slate-800 border-slate-600 text-slate-300" },

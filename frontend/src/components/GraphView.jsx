@@ -10,6 +10,7 @@ import ReactFlow, {
 } from "reactflow";
 import { useFlowStore } from "../store.js";
 import { BRANCH_HUES, LANE_OVERVIEW_MIN, CARD_W, CARD_H, layoutOverview, useLanes } from "./laneLayout.js";
+import { traceGraph, TRACE_W, TRACE_H, ctxLabel } from "./traceLayout.js";
 
 const fmt = new Intl.NumberFormat();
 const prefersReducedMotion = () =>
@@ -71,9 +72,6 @@ function resolveRole(semanticKind, filePath) {
 // ─────────────────────────────────────────────────────────────────────────────
 const COMPLEXITY_BORDER_WIDTH = { low: 1, medium: 1.5, high: 2.5, very_high: 4 };
 
-function complexityBorderWidth(complexity) {
-  return COMPLEXITY_BORDER_WIDTH[complexity] || 1;
-}
 
 // Extra px added to a node's min/max width — sqrt-scaled so one outlier
 // hub doesn't make every other node microscopic by comparison.
@@ -84,12 +82,6 @@ function fanSizeBoost(fanRatio) {
 
 // White "spotlight" glow (kept distinct from the amber search-highlight and
 // the branch-hue palette) that only shows up for genuinely notable nodes.
-function pagerankGlow(prRatio) {
-  if (!prRatio || prRatio < 0.18) return undefined;
-  const blur = 5 + prRatio * 16;
-  const alpha = 0.2 + prRatio * 0.4;
-  return `drop-shadow(0 0 ${blur.toFixed(0)}px rgba(255,255,255,${alpha.toFixed(2)}))`;
-}
 
 function metricsTooltip(metrics) {
   if (!metrics) return undefined;
@@ -187,8 +179,11 @@ const FileNodeComponent = React.memo(function FileNodeComponent({ id, data }) {
     : { minWidth: 170 + boost, maxWidth: 260 + boost };
   // Worst-offender complexity in the file → border thickness; summed
   // PageRank → the same white "notable" glow used on function nodes.
-  const borderWidthStyle = { borderWidth: complexityBorderWidth(metrics?.complexity) };
-  const glow = lod ? undefined : pagerankGlow(prRatio);
+  // Complexity/PageRank used to be drawn as border thickness and glow on top of
+  // size, stripe and dots: five encodings of 'importance' at once. Dots and size
+  // stay; the rest is available in the inspector.
+  const borderWidthStyle = undefined;
+  const glow = undefined;
 
   return (
     <div
@@ -214,9 +209,9 @@ const FileNodeComponent = React.memo(function FileNodeComponent({ id, data }) {
       <div className={isRoot ? "px-4 py-3.5" : "px-4 py-3"}>
         <div className="flex items-center gap-2 mb-1">
           <span className="text-blue-400 shrink-0"><FileIcon /></span>
-          <span className="text-[10px] uppercase tracking-widest text-blue-400/70 font-semibold">File</span>
-          {isUpstream && <span className="text-[9px] font-semibold text-sky-400 bg-sky-950/80 px-1.5 py-0.5 rounded border border-sky-700/50">Caller</span>}
-          {isDownstream && <span className="text-[9px] font-semibold text-emerald-400 bg-emerald-950/80 px-1.5 py-0.5 rounded border border-emerald-700/50">Callee</span>}
+          <span className="text-[11px] uppercase tracking-widest text-blue-400/70 font-semibold">File</span>
+          {isUpstream && <span className="text-[11px] font-semibold text-sky-400 bg-sky-950/80 px-1.5 py-0.5 rounded border border-sky-700/50">Caller</span>}
+          {isDownstream && <span className="text-[11px] font-semibold text-emerald-400 bg-emerald-950/80 px-1.5 py-0.5 rounded border border-emerald-700/50">Callee</span>}
           <button
             onClick={(e) => { e.stopPropagation(); (e.shiftKey ? deepExpand : toggleExpand)(id); }}
             title={isExpanded ? "Collapse" : "Expand to see functions (Shift-click or Shift+Enter: expand several levels)"}
@@ -229,13 +224,13 @@ const FileNodeComponent = React.memo(function FileNodeComponent({ id, data }) {
         </div>
         <div className={`${isRoot ? "text-base" : "text-sm"} font-semibold text-white leading-snug truncate`}>{label}</div>
         {filePath && (
-          <div className="text-[10px] text-blue-300/50 mt-0.5 truncate">{filePath}</div>
+          <div className="text-[11px] text-blue-300/50 mt-0.5 truncate">{filePath}</div>
         )}
         {showDesc && (
-          <div className="text-[10px] text-blue-200/60 mt-1.5 italic leading-snug line-clamp-2">{description}</div>
+          <div className="text-[11px] text-blue-200/60 mt-1.5 italic leading-snug line-clamp-2">{description}</div>
         )}
         {fnCount > 0 && (
-          <div className="mt-2 inline-flex items-center gap-1 text-[10px] text-blue-300/60 bg-blue-900/30 rounded-full px-2 py-0.5">
+          <div className="mt-2 inline-flex items-center gap-1 text-[11px] text-blue-300/60 bg-blue-900/30 rounded-full px-2 py-0.5">
             <FnIcon />{fnCount} symbols
           </div>
         )}
@@ -270,8 +265,11 @@ const FunctionNodeComponent = React.memo(function FunctionNodeComponent({ id, da
     : { minWidth: 145 + boost, maxWidth: 225 + boost };
   // Cyclomatic complexity → border thickness; PageRank/centrality → a white
   // spotlight glow, distinct from the amber search-highlight and branch hues.
-  const borderWidthStyle = { borderWidth: complexityBorderWidth(metrics?.complexity) };
-  const glow = lod ? undefined : pagerankGlow(prRatio);
+  // Complexity/PageRank used to be drawn as border thickness and glow on top of
+  // size, stripe and dots: five encodings of 'importance' at once. Dots and size
+  // stay; the rest is available in the inspector.
+  const borderWidthStyle = undefined;
+  const glow = undefined;
 
   return (
     <div
@@ -297,12 +295,12 @@ const FunctionNodeComponent = React.memo(function FunctionNodeComponent({ id, da
       <div className="px-3 py-2.5">
         <div className="flex items-center gap-1.5 mb-0.5">
           <span className={`${accent.text} shrink-0`}>{isClass ? <ClassIcon /> : <FnIcon />}</span>
-          <span className={`text-[9px] uppercase tracking-wider font-semibold ${accent.text} opacity-70`}>
+          <span className={`text-[11px] uppercase tracking-wider font-semibold ${accent.text} opacity-70`}>
             {kind || "fn"}
           </span>
           {role.label && (
             <span
-              className="ml-1 text-[8px] font-bold px-1 rounded"
+              className="ml-1 text-[11px] font-bold px-1 rounded"
               style={{ background: `${role.color}22`, color: role.color }}
             >
               <span aria-hidden="true">{role.icon} </span>{role.label}
@@ -324,8 +322,8 @@ const FunctionNodeComponent = React.memo(function FunctionNodeComponent({ id, da
               ))}
             </span>
           )}
-          {isUpstream && <span className="text-[8px] font-bold text-sky-400 bg-sky-950 px-1 rounded border border-sky-800">Caller</span>}
-          {isDownstream && <span className="text-[8px] font-bold text-emerald-400 bg-emerald-950 px-1 rounded border border-emerald-800">Callee</span>}
+          {isUpstream && <span className="text-[11px] font-bold text-sky-400 bg-sky-950 px-1 rounded border border-sky-800">Caller</span>}
+          {isDownstream && <span className="text-[11px] font-bold text-emerald-400 bg-emerald-950 px-1 rounded border border-emerald-800">Callee</span>}
           {hasCallees && (
             <button
               onClick={(e) => { e.stopPropagation(); (e.shiftKey ? deepExpand : toggleExpand)(id); }}
@@ -340,13 +338,13 @@ const FunctionNodeComponent = React.memo(function FunctionNodeComponent({ id, da
         </div>
         <div className="font-mono text-xs text-white/90 truncate leading-snug">{label}</div>
         {showDesc && (
-          <div className="text-[10px] text-slate-400/80 mt-1 italic leading-snug line-clamp-2">{description}</div>
+          <div className="text-[11px] text-slate-400/80 mt-1 italic leading-snug line-clamp-2">{description}</div>
         )}
         {isExpanded && hiddenCallees > 0 && (
           <button
             onClick={(e) => { e.stopPropagation(); showAllCallees(id); }}
             title="Showing the most important callees — click to add the rest"
-            className="mt-1.5 text-[9px] font-semibold text-amber-300/90 hover:text-amber-200 bg-amber-950/50 border border-amber-800/50 rounded px-1.5 py-0.5"
+            className="mt-1.5 text-[11px] font-semibold text-amber-300/90 hover:text-amber-200 bg-amber-950/50 border border-amber-800/50 rounded px-1.5 py-0.5"
           >
             +{hiddenCallees} less important
           </button>
@@ -401,9 +399,9 @@ const LaneCardComponent = React.memo(function LaneCardComponent({ id, data }) {
       >
         <BranchStripe color={stripe} rounded="rounded-l-xl" />
         <div className="flex items-center gap-2">
-          <span className="text-[10px] uppercase tracking-widest text-blue-400/70 font-semibold">{kind}</span>
+          <span className="text-[11px] uppercase tracking-widest text-blue-400/70 font-semibold">{kind}</span>
           {relation && (
-            <span className={`text-[10px] font-semibold px-1.5 rounded border ${
+            <span className={`text-[11px] font-semibold px-1.5 rounded border ${
               relation === "Caller"
                 ? "text-sky-400 bg-sky-950/80 border-sky-700/50"
                 : "text-emerald-400 bg-emerald-950/80 border-emerald-700/50"
@@ -423,11 +421,42 @@ const LaneCardComponent = React.memo(function LaneCardComponent({ id, data }) {
   );
 });
 
+// One function in a dry-run trace: its step number, the control flow it was
+// called under, where it lives, and what the graph could not follow from it.
+const TraceNodeComponent = React.memo(function TraceNodeComponent({ data }) {
+  const { step, label, filePath, line, module, hue, ctx, enters, ambiguous, again, cycle, hidden, cut, isCurrent, isDim, isDimmed } = data;
+  return (
+    <div className="relative" style={{ width: TRACE_W, height: TRACE_H, opacity: isDim || isDimmed ? 0.3 : 1 }}>
+      <Handle type="target" position={Position.Left} className="!bg-blue-500 !border-blue-700 !w-2 !h-2" />
+      <div className={`relative h-full overflow-hidden rounded-xl border pl-4 pr-3 py-2 bg-gradient-to-br from-blue-950/80 to-blue-900/40 transition-[border-color,box-shadow] duration-150 ${
+        isCurrent ? "border-amber-400 shadow-[0_0_0_2px_rgba(251,191,36,0.3)]" : "border-[#1e2d4a]"
+      }`}>
+        <BranchStripe color={branchNodeColor(hue, 0)} rounded="rounded-l-xl" />
+        <div className="flex items-center gap-1.5 min-w-0">
+          <span className="text-[11px] font-semibold text-blue-300 tabular-nums">#{step}</span>
+          {ctx && <span className="text-[11px] px-1.5 rounded border border-amber-800/50 text-amber-300 bg-amber-950/40">{ctxLabel[ctx] || ctx}</span>}
+          {again > 0 && <span className="text-[11px] text-slate-400 tabular-nums">called {again + 1}×</span>}
+          {cycle && <span className="text-[11px] text-rose-300">cycle</span>}
+        </div>
+        <div translate="no" className="font-mono text-sm text-white truncate">{label}</div>
+        <div translate="no" className="text-[11px] text-blue-300/50 truncate">{(filePath || "").split("/").slice(-2).join("/")}{line ? `:${line}` : ""}</div>
+        <div className="flex items-center gap-2 text-[11px] min-w-0">
+          {module && <span translate="no" className={`truncate ${enters ? "text-sky-300" : "text-slate-500"}`}>{enters ? "↪ " : ""}{module}</span>}
+          {ambiguous > 0 && <span className="shrink-0 text-amber-300">{ambiguous} ambiguous</span>}
+          {(hidden > 0 || cut > 0) && <span className="shrink-0 text-slate-500">+{hidden + cut} more</span>}
+        </div>
+      </div>
+      <Handle type="source" position={Position.Right} className="!bg-blue-500 !border-blue-700 !w-2 !h-2" />
+    </div>
+  );
+});
+
 const nodeTypes = {
   fileNode:     FileNodeComponent,
   functionNode: FunctionNodeComponent,
   laneBg:       LaneBackgroundComponent,
   laneCard:     LaneCardComponent,
+  traceNode:    TraceNodeComponent,
 };
 
 function laneCardData(lane, onFocus) {
@@ -455,6 +484,7 @@ function laneEdge(source, target, count, hue) {
 
 // Most neighbouring lanes shown per side in focus mode; the rest are counted.
 const NEIGHBOR_CAP = 8;
+const FOCUS_CAP = 60;
 const NEIGHBOR_GAP = 130;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -571,7 +601,7 @@ function EmptyState() {
         <div className="text-sm text-slate-500 max-w-xs leading-relaxed">
           Enter a repository path in the sidebar and click <strong className="text-slate-400">Ingest</strong> to explore its code graph.
         </div>
-        <div className="mt-6 flex items-center gap-6 text-xs text-slate-600">
+        <div className="mt-6 flex items-center gap-6 text-xs text-slate-400">
           <span>Click a node to inspect it</span>
           <span className="w-1 h-1 rounded-full bg-slate-700" />
           <span>Click ▸ to expand</span>
@@ -586,7 +616,7 @@ function EmptyState() {
 // ─────────────────────────────────────────────────────────────────────────────
 // Main component
 // ─────────────────────────────────────────────────────────────────────────────
-function GraphViewInner() {
+function GraphViewInner({ dock }) {
   const visibleNodes   = useFlowStore((s) => s.nodes);
   const visibleEdges   = useFlowStore((s) => s.edges);
   const expanded       = useFlowStore((s) => s.expanded);
@@ -603,12 +633,16 @@ function GraphViewInner() {
   const nodeBudget     = useFlowStore((s) => s.nodeBudget);
   const focusLaneId    = useFlowStore((s) => s.focusLaneId);
   const focusLane      = useFlowStore((s) => s.focusLane);
+  const trace          = useFlowStore((s) => s.trace);
+  const traceStep      = useFlowStore((s) => s.traceStep);
+  const setTraceStep    = useFlowStore((s) => s.setTraceStep);
+  const clearTrace      = useFlowStore((s) => s.clearTrace);
   const vw             = useRFStore((s) => s.width);
   const vh             = useRFStore((s) => s.height);
 
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
-  const { fitView } = useReactFlow();
+  const { fitView, setCenter } = useReactFlow();
   const prevKeyRef = useRef("");
   // Hover-focus: dim everything except the hovered node and its direct
   // neighbors, and brighten the edges that connect them. Purely a rendering
@@ -656,11 +690,22 @@ function GraphViewInner() {
   // focus    — one lane in full, its neighbouring lanes as cards on either side.
   const overviewCapable = rootIds.length >= LANE_OVERVIEW_MIN;
   const focusValid = overviewCapable && !!focusLaneId && (members.get(focusLaneId)?.length ?? 0) > 0;
-  const mode = !overviewCapable ? "classic" : focusValid ? "focus" : "overview";
-  const focusSet = useMemo(
-    () => (mode === "focus" ? new Set(members.get(focusLaneId)) : null),
-    [mode, members, focusLaneId],
-  );
+  const mode = trace ? "trace" : !overviewCapable ? "classic" : focusValid ? "focus" : "overview";
+  // A lane can hold hundreds of files or symbols; a person can read about 60.
+  // Focus mode shows the most important ones and says how many it left out.
+  const [showAllFor, setShowAllFor] = useState(null);
+  const { focusSet, hiddenInLane } = useMemo(() => {
+    if (mode !== "focus") return { focusSet: null, hiddenInLane: 0 };
+    const ids = members.get(focusLaneId) || [];
+    if (ids.length <= FOCUS_CAP || showAllFor === focusLaneId) return { focusSet: new Set(ids), hiddenInLane: 0 };
+    const score = (id) => {
+      const n = visibleNodes[id];
+      const m = n.kind === "file" || n.kind === "module" ? fileMetrics[n.file_path] : nodeMetrics[id];
+      return (m?.pagerank || 0) + (n.function_count || 0) * 1e-9;
+    };
+    const ranked = ids.filter((id) => id !== focusLaneId).sort((a, b) => score(b) - score(a));
+    return { focusSet: new Set([focusLaneId, ...ranked.slice(0, FOCUS_CAP - 1)]), hiddenInLane: ids.length - FOCUS_CAP };
+  }, [mode, members, focusLaneId, showAllFor, visibleNodes, fileMetrics, nodeMetrics]);
   const laneByRoot = useMemo(() => new Map(lanes.map((l) => [l.id, l])), [lanes]);
 
   // Selecting a node traces its callers (upstream) and callees (downstream)
@@ -708,7 +753,7 @@ function GraphViewInner() {
   const rfEdges = useMemo(() => {
     const hl = new Set(highlight);
     const { upstreamEdges, downstreamEdges } = selectionFlow;
-    if (mode === "overview") return [];
+    if (mode === "overview" || mode === "trace") return [];
     return Object.values(visibleEdges).map((e) => {
       // Focus mode draws only the focused lane here; edges crossing into a
       // neighbouring lane are drawn as card edges (see focusExtras).
@@ -787,7 +832,7 @@ function GraphViewInner() {
 
   // Each branch gets its own compact grid pass, then lanes stack without overlap.
   const { positioned, lanes: laneBoxes } = useMemo(() => {
-    if (mode === "overview") return { positioned: [], lanes: [] };
+    if (mode === "overview" || mode === "trace") return { positioned: [], lanes: [] };
     if (mode === "focus") {
       return layoutBranches([...focusSet].map((id) => visibleNodes[id]), branchInfo, [focusLaneId]);
     }
@@ -947,14 +992,29 @@ function GraphViewInner() {
     };
   }, [mode, laneBoxes, laneEdges, focusLaneId, focusSet, laneByRoot, laneOf, visibleEdges, focusLane]);
 
+  const traceView = useMemo(
+    () => (mode === "trace" ? traceGraph(trace, traceStep) : { nodes: [], edges: [] }),
+    [mode, trace, traceStep],
+  );
   const graphNodes = useMemo(
-    () => (mode === "overview" ? overviewGraph.nodes : mode === "focus" ? [...rfNodes, ...focusExtras.nodes] : rfNodes),
-    [mode, overviewGraph, rfNodes, focusExtras],
+    () => (mode === "trace" ? traceView.nodes
+      : mode === "overview" ? overviewGraph.nodes
+      : mode === "focus" ? [...rfNodes, ...focusExtras.nodes] : rfNodes),
+    [mode, traceView, overviewGraph, rfNodes, focusExtras],
   );
   const graphEdges = useMemo(
-    () => (mode === "overview" ? overviewGraph.edges : mode === "focus" ? [...rfEdges, ...focusExtras.edges] : rfEdges),
-    [mode, overviewGraph, rfEdges, focusExtras],
+    () => (mode === "trace" ? traceView.edges
+      : mode === "overview" ? overviewGraph.edges
+      : mode === "focus" ? [...rfEdges, ...focusExtras.edges] : rfEdges),
+    [mode, traceView, overviewGraph, rfEdges, focusExtras],
   );
+
+  // Stepping through a trace keeps the current function centred.
+  useEffect(() => {
+    if (mode !== "trace" || traceStep < 0) return;
+    const cur = traceView.nodes.find((n) => n.data.isCurrent);
+    if (cur) setCenter(cur.position.x + TRACE_W / 2, cur.position.y + TRACE_H / 2, { zoom: 0.9, duration: prefersReducedMotion() ? 0 : 300 });
+  }, [mode, traceStep, traceView, setCenter]);
 
   // Direct neighbors of the hovered node (both directions) — everything else
   // dims while hovering, so the eye reads "this node's connections" first.
@@ -1022,27 +1082,46 @@ function GraphViewInner() {
 
   useEffect(() => {
     const count = graphNodes.length;
-    const key = `${mode}:${focusLaneId}:${count}`;
+    const key = `${mode}:${focusLaneId}:${count}:${trace?.start ?? ""}:${dock}`;
     if (count === 0 || key === prevKeyRef.current) return;
-    prevKeyRef.current = key;
     // Animating fitView is a nice touch on small graphs but adds a 350ms
     // stretch of continuous layout/paint work across every node on large
     // ones — skip the animation once the view is big enough for that to be
     // felt as lag rather than seen as polish.
     const animate = count <= FIT_VIEW_ANIMATE_THRESHOLD && !prefersReducedMotion();
-    const id = setTimeout(
-      () => fitView(animate ? { padding: 0.12, duration: 350 } : { padding: 0.12, duration: 0 }),
-      60,
-    );
+    // The key is recorded only once the fit actually runs: if the nodes change
+    // again inside the 60ms window the timer is cancelled, and the next run must
+    // still fit. maxZoom: a lone node must not be blown up to fill the canvas.
+    const id = setTimeout(() => {
+      prevKeyRef.current = key;
+      fitView({ padding: 0.12, maxZoom: 1.1, duration: animate ? 350 : 0 });
+    }, 60);
     return () => clearTimeout(id);
-  }, [graphNodes, mode, focusLaneId, fitView]);
+  }, [graphNodes, mode, focusLaneId, trace, fitView, dock]);
 
   const isEmpty = Object.keys(visibleNodes).length === 0;
 
   return (
     <div className="w-full h-full relative">
       {isEmpty && <EmptyState />}
-      {mode !== "classic" && (
+      {mode === "trace" && (
+        <nav
+          aria-label="Trace Navigation"
+          className="absolute top-3 left-3 z-10 max-w-[60%] flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs bg-[#0a0f1a]/90 border border-[#1a2540] backdrop-blur-sm"
+        >
+          <button type="button" onClick={clearTrace} className="shrink-0 font-semibold text-blue-300 hover:text-blue-200">
+            Exit Trace
+          </button>
+          <span aria-hidden="true" className="text-slate-400">›</span>
+          <span translate="no" className="font-semibold text-white truncate">
+            {trace.steps[0].name}{trace.target ? ` → ${trace.target.split("::").pop()}` : ""}
+          </span>
+          <span className="shrink-0 text-slate-500 tabular-nums">
+            · {fmt.format(trace.stats.steps)} steps · {fmt.format(trace.stats.modules.length)} modules
+          </span>
+        </nav>
+      )}
+      {mode !== "classic" && mode !== "trace" && (
         <nav
           aria-label="Graph Navigation"
           className="absolute top-3 left-3 z-10 max-w-[60%] flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs bg-[#0a0f1a]/90 border border-[#1a2540] backdrop-blur-sm"
@@ -1062,8 +1141,16 @@ function GraphViewInner() {
             </span>
           ) : (
             <>
-              <span aria-hidden="true" className="text-slate-600">›</span>
+              <span aria-hidden="true" className="text-slate-400">›</span>
               <span translate="no" className="font-semibold text-white truncate">{laneByRoot.get(focusLaneId)?.label}</span>
+              {hiddenInLane > 0 && (
+                <span className="shrink-0 text-slate-500 tabular-nums">
+                  · top {FOCUS_CAP} of {fmt.format(hiddenInLane + FOCUS_CAP)} by importance{" "}
+                  <button type="button" onClick={() => setShowAllFor(focusLaneId)} className="text-blue-300 hover:text-blue-200">
+                    Show all
+                  </button>
+                </span>
+              )}
               {(focusExtras.hiddenCallers > 0 || focusExtras.hiddenCallees > 0) && (
                 <span className="shrink-0 text-slate-500 tabular-nums">
                   · +{fmt.format(focusExtras.hiddenCallers + focusExtras.hiddenCallees)} more connected lanes not shown
@@ -1076,7 +1163,7 @@ function GraphViewInner() {
           </span>
         </nav>
       )}
-      {nodeBudget?.truncated && (
+      {mode !== "trace" && nodeBudget?.truncated && (
         <div role="status" className="absolute top-3 left-1/2 -translate-x-1/2 z-10 px-3 py-1.5 rounded-full text-[11px] font-medium text-amber-100 bg-amber-950/90 border border-amber-700/60 shadow-lg backdrop-blur-sm">
           {nodeBudget.tiered
             ? `Showing ${fmt.format(nodeBudget.shown)} top-level functions of ${fmt.format(nodeBudget.total)} — click a node's ▸ to reveal what it calls`
@@ -1089,11 +1176,15 @@ function GraphViewInner() {
         nodeTypes={nodeTypes}
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
-        onNodeClick={(_, node) => { if (node.type !== "laneBg" && node.type !== "laneCard") selectNode(node.id); }}
+        onNodeClick={(_, node) => {
+          if (node.type === "traceNode") setTraceStep(node.data.step);
+          else if (node.type !== "laneBg" && node.type !== "laneCard") selectNode(node.id);
+        }}
         onNodeMouseEnter={(_, node) => { if (node.type !== "laneBg") setHoveredId(node.id); }}
         onNodeMouseLeave={() => setHoveredId(null)}
         onPaneClick={clearSelection}
         fitView
+        fitViewOptions={{ padding: 0.12, maxZoom: 1.1 }}
         proOptions={{ hideAttribution: true }}
         nodesDraggable={false}
         nodesConnectable={false}
@@ -1115,7 +1206,7 @@ function GraphViewInner() {
           ariaLabel="Graph Minimap"
           pannable
           zoomable
-          nodeColor={(n) => n.type === "laneBg" ? "transparent" : n.type === "laneCard" ? branchNodeColor(n.data.hue, 0) : (n.data?.branchColor || (n.type === "fileNode" ? "#1e3a8a" : "#312e81"))}
+          nodeColor={(n) => n.type === "laneBg" ? "transparent" : (n.type === "laneCard" || n.type === "traceNode") ? branchNodeColor(n.data.hue, 0) : (n.data?.branchColor || (n.type === "fileNode" ? "#1e3a8a" : "#312e81"))}
           maskColor="rgba(7,9,15,0.85)"
           style={{ borderRadius: 10 }}
         />
@@ -1124,6 +1215,6 @@ function GraphViewInner() {
   );
 }
 
-export default function GraphView() {
-  return <GraphViewInner />;
+export default function GraphView({ dock = 0 }) {
+  return <GraphViewInner dock={dock} />;
 }

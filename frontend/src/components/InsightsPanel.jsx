@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import { useFlowStore } from "../store.js";
-import { CloseIcon } from "./ImpactPanel.jsx";
+import { CloseIcon } from "./Inspector.jsx";
 import { useDialog } from "./useDialog.js";
 
 const fmt = new Intl.NumberFormat();
@@ -10,7 +10,7 @@ const TABS = [
   { key: "god_nodes",  label: "God nodes",  icon: "⭐" },
   { key: "high_risk",  label: "High risk",  icon: "⚠️" },
   { key: "cycles",     label: "Cycles",     icon: "🔁" },
-  { key: "dead_code",  label: "Dead code",  icon: "🪦" },
+  { key: "dead_code",  label: "No static callers", icon: "∅" },
   { key: "couplings",  label: "Couplings",  icon: "🧵" },
 ];
 
@@ -26,12 +26,12 @@ function NodeRow({ node, extra, onClick }) {
     >
       <div className="min-w-0">
         <div className="font-mono text-xs text-white/85 truncate" translate="no">{node.name}</div>
-        <div className="text-[10px] text-slate-600 truncate">{shortPath(node.file_path)}</div>
+        <div className="text-[11px] text-slate-400 truncate">{shortPath(node.file_path)}</div>
         {node.summary && (
-          <div className="text-[10px] text-slate-500 mt-0.5 line-clamp-2">{node.summary}</div>
+          <div className="text-[11px] text-slate-500 mt-0.5 line-clamp-2">{node.summary}</div>
         )}
       </div>
-      {extra && <div className="shrink-0 text-right text-[10px] text-slate-400">{extra}</div>}
+      {extra && <div className="shrink-0 text-right text-[11px] text-slate-400">{extra}</div>}
     </button>
   );
 }
@@ -76,9 +76,9 @@ export default function InsightsPanel() {
         <div className="flex items-center justify-between px-5 py-3.5 border-b border-[#1a2540] shrink-0">
           <div>
             <h2 id="insights-title" className="text-sm font-semibold text-white">Graph Insights</h2>
-            <div className="text-[10px] text-slate-500">
+            <div className="text-[11px] text-slate-500">
               {num(stats.callable_nodes)} functions · {num(stats.call_edges)} call edges ·{" "}
-              {num(stats.cycle_count ?? 0)} cycles · {num(stats.dead_code_count ?? 0)} dead-code candidates
+              {num(stats.cycle_count ?? 0)} cycles · {num(stats.dead_code_count ?? 0)} with no static callers
             </div>
           </div>
           <div className="flex items-center gap-2">
@@ -86,7 +86,7 @@ export default function InsightsPanel() {
               onClick={() => fetchInsights()}
               title="Recompute analytics"
               aria-label="Recompute Analytics"
-              className="text-[10px] px-2.5 py-1 rounded-lg border border-[#1e2d4a] text-slate-400 hover:text-slate-200 hover:border-slate-500 transition-colors"
+              className="text-[11px] px-2.5 py-1 rounded-lg border border-[#1e2d4a] text-slate-400 hover:text-slate-200 hover:border-slate-500 transition-colors"
             >
               Refresh
             </button>
@@ -99,6 +99,16 @@ export default function InsightsPanel() {
             </button>
           </div>
         </div>
+
+        {insights && !insightsLoading && (
+          <div className="px-5 py-2 text-[11px] leading-snug text-amber-200/80 bg-amber-950/20 border-b border-[#1a2540] shrink-0">
+            Built from the calls the graph could resolve
+            {stats.call_resolution?.ambiguous != null && stats.call_resolution.resolved + stats.call_resolution.ambiguous > 0
+              ? ` (${Math.round((100 * stats.call_resolution.resolved) / (stats.call_resolution.resolved + stats.call_resolution.ambiguous))}% of calls to names defined in this repo)`
+              : ""}
+            . Calls through dynamic dispatch, callbacks and framework hooks are missing, so read these as leads to check, not verdicts.
+          </div>
+        )}
 
         {/* Tabs */}
         <div role="tablist" aria-label="Insight Categories" onKeyDown={onTabKey} className="flex gap-1 px-4 pt-3 shrink-0">
@@ -133,7 +143,7 @@ export default function InsightsPanel() {
 
           {insights && !insightsLoading && tab === "god_nodes" && (
             <>
-              <div className="text-[10px] text-slate-500 mb-2">
+              <div className="text-[11px] text-slate-500 mb-2">
                 Most influential functions by PageRank, degree, and betweenness centrality. Click to select in the graph.
               </div>
               {(insights.god_nodes || []).map((n, i) => (
@@ -149,11 +159,11 @@ export default function InsightsPanel() {
 
           {insights && !insightsLoading && tab === "high_risk" && (
             <>
-              <div className="text-[10px] text-slate-500 mb-2">
+              <div className="text-[11px] text-slate-500 mb-2">
                 Components matching multiple risk signals — big fan-out, many callers, high complexity.
               </div>
               {(insights.high_risk || []).length === 0 && (
-                <div className="text-xs text-slate-500 py-6 text-center">No components matched multiple risk signals. <span aria-hidden="true">🎉</span></div>
+                <div className="text-xs text-slate-500 py-6 text-center">None matched multiple risk signals in the resolved graph.</div>
               )}
               {(insights.high_risk || []).map((n) => (
                 <NodeRow key={n.id} node={n} onClick={() => pick(n.id)}
@@ -164,11 +174,11 @@ export default function InsightsPanel() {
 
           {insights && !insightsLoading && tab === "cycles" && (
             <>
-              <div className="text-[10px] text-slate-500 mb-2">
+              <div className="text-[11px] text-slate-500 mb-2">
                 Circular call dependencies — refactoring candidates.
               </div>
               {(insights.cycles || []).length === 0 && (
-                <div className="text-xs text-slate-500 py-6 text-center">No circular dependencies found. <span aria-hidden="true">🎉</span></div>
+                <div className="text-xs text-slate-500 py-6 text-center">No cycles among the resolved calls.</div>
               )}
               {(insights.cycles || []).map((cyc, i) => (
                 <div key={i} className="px-3 py-2 border-b border-[#141d33] last:border-0">
@@ -176,7 +186,7 @@ export default function InsightsPanel() {
                     {cyc.map((n, j) => (
                       <React.Fragment key={j}>
                         <button onClick={() => pick(n.id)} className="text-rose-300 hover:underline focus-visible:underline" translate="no">{n.name}</button>
-                        <span className="text-slate-600">→</span>
+                        <span className="text-slate-400">→</span>
                       </React.Fragment>
                     ))}
                     <span className="text-rose-300/60">{cyc[0]?.name}</span>
@@ -188,11 +198,12 @@ export default function InsightsPanel() {
 
           {insights && !insightsLoading && tab === "dead_code" && (
             <>
-              <div className="text-[10px] text-slate-500 mb-2">
-                Never invoked anywhere in the graph. Candidates only — dynamic dispatch and framework hooks cause false positives.
+              <div className="text-[11px] text-slate-500 mb-2">
+                Functions with no resolved call to them. Not the same as unused: callbacks, overrides, registries
+                and framework hooks are called in ways the graph cannot see. Check before deleting.
               </div>
               {(insights.dead_code || []).length === 0 && (
-                <div className="text-xs text-slate-500 py-6 text-center">Every function has at least one caller. <span aria-hidden="true">🎉</span></div>
+                <div className="text-xs text-slate-500 py-6 text-center">Every function has a resolved caller or looks like an entry point.</div>
               )}
               {(insights.dead_code || []).map((n) => (
                 <NodeRow key={n.id} node={n} onClick={() => pick(n.id)} />
@@ -202,7 +213,7 @@ export default function InsightsPanel() {
 
           {insights && !insightsLoading && tab === "couplings" && (
             <>
-              <div className="text-[10px] text-slate-500 mb-2">
+              <div className="text-[11px] text-slate-500 mb-2">
                 Surprising cross-module couplings — subsystem pairs joined by only one or two call edges.
               </div>
               {(insights.surprising_couplings || []).length === 0 && (
@@ -212,11 +223,11 @@ export default function InsightsPanel() {
                 <div key={i} className="px-3 py-2 border-b border-[#141d33] last:border-0">
                   <div className="text-[11px] text-slate-300">
                     <span className="text-blue-300">{c.from_module}</span>
-                    <span className="text-slate-600"> → </span>
+                    <span className="text-slate-400"> → </span>
                     <span className="text-blue-300">{c.to_module}</span>
                     <span className="text-slate-500"> · {fmt.format(c.edge_count)} edge{c.edge_count !== 1 ? "s" : ""}</span>
                   </div>
-                  <div className="text-[10px] text-slate-500 font-mono mt-0.5">
+                  <div className="text-[11px] text-slate-500 font-mono mt-0.5">
                     e.g. {c.example?.source} → {c.example?.target}
                   </div>
                 </div>

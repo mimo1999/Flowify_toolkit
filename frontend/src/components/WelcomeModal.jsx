@@ -15,7 +15,7 @@ const CloseIcon = () => (
 function Step({ n, children }) {
   return (
     <li className="flex gap-2.5">
-      <span className="shrink-0 w-5 h-5 rounded-full bg-blue-900/40 border border-blue-700/50 text-blue-300 text-[10px] flex items-center justify-center font-mono mt-0.5">
+      <span className="shrink-0 w-5 h-5 rounded-full bg-blue-900/40 border border-blue-700/50 text-blue-300 text-[11px] flex items-center justify-center font-mono mt-0.5">
         {n}
       </span>
       <span className="text-sm text-slate-300 leading-snug">{children}</span>
@@ -77,28 +77,28 @@ export default function WelcomeModal() {
         {/* Body */}
         <div className="px-5 py-4 flex flex-col gap-4">
           <p className="text-sm text-slate-300 leading-relaxed">
-            Flowify turns a codebase into an explorable, queryable call graph — no reading required.
+            Flowify tells you where to look in a large change: it keeps a call graph of the whole codebase and ranks every changed function by how far a mistake in it can travel.
           </p>
 
           <div>
-            <h3 className="text-[10px] uppercase tracking-widest text-blue-400/80 font-semibold mb-2">
+            <h3 className="text-[11px] uppercase tracking-widest text-blue-400/80 font-semibold mb-2">
               How to Use It
             </h3>
             <ol className="flex flex-col gap-2">
-              <Step n={1}>Paste a repo path or git URL in the sidebar, then <b>Ingest</b>.</Step>
-              <Step n={2}>Click <span aria-hidden="true">▸</span><span className="sr-only">the arrow</span> on a node to expand it, or jump straight to a depth (Modules / Files / Functions).</Step>
-              <Step n={3}>Ask a question in the bar at the bottom — the answer cites the exact functions it’s grounded in.</Step>
+              <Step n={1}>Paste a repo path or git URL and choose <b>Analyse repository</b>.</Step>
+              <Step n={2}>In <b>Review</b>, pick a branch from the queue, or check your own working copy before you ask for review.</Step>
+              <Step n={3}>Work through <b>Must check</b> first: static checks, the diff and the callers it did not update. <b>Explore</b> has the graph, search and trace.</Step>
             </ol>
           </div>
 
           <div>
-            <h3 className="text-[10px] uppercase tracking-widest text-blue-400/80 font-semibold mb-2">
+            <h3 className="text-[11px] uppercase tracking-widest text-blue-400/80 font-semibold mb-2">
               How to Read It
             </h3>
             <ul className="flex flex-col gap-1.5 text-sm text-slate-300 leading-snug">
               <li>Node size/glow = importance — bigger and brighter is more central.</li>
               <li><span aria-hidden="true">🔌 🗄️ 📤 📥</span> badges = API, database, event-emit, event-consume activity.</li>
-              <li>Edge color = relationship type — full key in the sidebar's <b>Legend</b>.</li>
+              <li>Edge color = relationship type — full key under <b>How to read the graph</b> in the sidebar.</li>
             </ul>
           </div>
 

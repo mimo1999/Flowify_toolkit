@@ -121,6 +121,7 @@ export const useFlowStore = create((set, get) => ({
 
   // Impact analysis panel
   impactData: null,
+  nodeSource: null,
   impactLoading: false,
 
   // Knowledge layer: docs + rationale referencing the selected node
@@ -153,6 +154,34 @@ export const useFlowStore = create((set, get) => ({
   // Root id of the lane shown in focus mode; null = lane overview. Only
   // meaningful when there are enough roots for the overview (see GraphView).
   focusLaneId: null,
+
+  // Dry-run trace: source-ordered walk of everything one function calls.
+  // `traceStep` is the step being shown (-1 = the whole trace at once).
+  // Review a change: functions touched by a git diff, ranked by who depends on them
+  reviewOpen: false,
+  review: null,
+  reviewLoading: false,
+  reviewError: "",
+  // What is being reviewed: null = the queue screen; otherwise a branch opened into its own
+  // worktree graph, or the author's working copy (`author: true`, the loaded graph itself).
+  reviewTarget: null,
+  queue: null,
+  queueBase: "main",
+  queueDays: 30,
+  queueLoading: false,
+  queueError: "",
+  openingRef: "",
+  aiResults: {},
+  aiLoading: false,
+  aiError: "",
+  aiUsage: null,
+  testRuns: {},
+  traceOpen: false,
+  trace: null,
+  traceStep: -1,
+  traceStarts: [],
+  traceLoading: false,
+  traceError: "",
 
   setRepoPath: (repoPath) => set({ repoPath }),
 
@@ -190,6 +219,8 @@ export const useFlowStore = create((set, get) => ({
         // A fresh ingest starts a new session — old history would otherwise
         // point Back at a different repository's graph.
         viewHistory: [], currentDepth: null, focusLaneId: null,
+        trace: null, traceStep: -1, traceStarts: [], traceError: "", review: null, reviewOpen: false, reviewError: "",
+        reviewTarget: null, queue: null, aiResults: {}, testRuns: {},
       });
       await get().loadInitial();
     } catch (e) {
@@ -220,24 +251,108 @@ export const useFlowStore = create((set, get) => ({
   },
 
   selectNode: (id) => {
-    set({ selectedId: id });
-    // Auto-fetch impact + doc references when a function node is selected
+    set({ selectedId: id, nodeSource: null });
+    // Auto-fetch impact + doc references + source when a function node is selected
     if (id && !id.startsWith("file::") && !id.startsWith("mod_")) {
       get().fetchImpact(id);
       get().fetchNodeRefs(id);
+      get().fetchSource(id);
     } else {
       set({ impactData: null, nodeRefs: null });
     }
   },
+
+  // Select a function and make sure it is on the canvas: if it is not visible
+  // (e.g. picked from search or from a caller list), re-root the canvas on it
+  // with its callees expanded. Callers stay in the inspector.
+  revealFunction: async (id) => {
+    const { graphId, nodes } = get();
+    if (!graphId) return;
+    if (nodes[id]) { get().selectNode(id); return; }
+    const r = await apiFetch(`${API}/focus?graph_id=${graphId}&node_id=${encodeURIComponent(id)}`);
+    if (!r.ok) { set({ error: await r.text() }); return; }
+    const node = await r.json();
+    get()._pushHistory();
+    set({ nodes: { [id]: node }, edges: {}, expanded: {}, rootIds: [id], currentDepth: null, focusLaneId: null });
+    get().selectNode(id);
+    await get().toggleExpand(id);
+  },
+
+  fetchSource: async (nodeId) => {
+    const { graphId } = get();
+    if (!graphId || !nodeId) return;
+    try {
+      const r = await apiFetch(`${API}/node_source?graph_id=${graphId}&node_id=${encodeURIComponent(nodeId)}`);
+      if (get().selectedId !== nodeId) return;
+      set({ nodeSource: r.ok ? await r.json() : null });
+    } catch (_) {
+      set({ nodeSource: null });
+    }
+  },
+  openTrace: async (startId) => {
+    get().clearQuery();
+    set({ traceOpen: true, traceError: "" });
+    if (startId) await get().runTrace(startId);
+    else if (!get().traceStarts.length) await get().searchTraceStarts("");
+  },
+  closeTrace: () => set({ traceOpen: false, trace: null, traceStep: -1 }),
+  clearTrace: () => set({ trace: null, traceStep: -1 }),
+  setTraceStep: (i) => set({ traceStep: i }),
+
+  runPath: async (sourceId, targetId) => {
+    const { graphId } = get();
+    if (!graphId) return;
+    set({ traceLoading: true, traceError: "" });
+    try {
+      const r = await apiFetch(`${API}/trace_path?graph_id=${graphId}&source=${encodeURIComponent(sourceId)}&target=${encodeURIComponent(targetId)}`);
+      if (!r.ok) throw new Error(await r.text());
+      set({ trace: await r.json(), traceStep: -1, traceOpen: true });
+    } catch (e) {
+      set({ traceError: String(e) });
+    } finally {
+      set({ traceLoading: false });
+    }
+  },
+
+  searchTraceStarts: async (q) => {
+    const { graphId } = get();
+    if (!graphId) return;
+    set({ traceLoading: true, traceError: "" });
+    try {
+      const r = await apiFetch(`${API}/trace_starts?graph_id=${graphId}&q=${encodeURIComponent(q)}`);
+      if (!r.ok) throw new Error(await r.text());
+      set({ traceStarts: (await r.json()).starts });
+    } catch (e) {
+      set({ traceError: String(e) });
+    } finally {
+      set({ traceLoading: false });
+    }
+  },
+
+  runTrace: async (startId) => {
+    const { graphId } = get();
+    if (!graphId) return;
+    set({ traceLoading: true, traceError: "" });
+    try {
+      const r = await apiFetch(`${API}/trace?graph_id=${graphId}&start=${encodeURIComponent(startId)}`);
+      if (!r.ok) throw new Error(await r.text());
+      set({ trace: await r.json(), traceStep: -1, traceOpen: true });
+    } catch (e) {
+      set({ traceError: String(e) });
+    } finally {
+      set({ traceLoading: false });
+    }
+  },
+
   // Enter focus mode on one lane (or return to the overview with null).
   // `keepSelection` lets a selection made elsewhere (e.g. Graph Insights)
   // survive the jump to the lane that contains it.
   focusLane: (id, keepSelection = false) => {
     if (get().focusLaneId === id) return;
     get()._pushHistory();
-    set(keepSelection ? { focusLaneId: id } : { focusLaneId: id, selectedId: null, impactData: null, nodeRefs: null });
+    set(keepSelection ? { focusLaneId: id } : { focusLaneId: id, selectedId: null, impactData: null, nodeRefs: null, nodeSource: null });
   },
-  clearSelection: () => set({ selectedId: null, impactData: null, nodeRefs: null }),
+  clearSelection: () => set({ selectedId: null, impactData: null, nodeRefs: null, nodeSource: null }),
   clearQuery: () => set({
     explanation: "", queryNodes: [], highlightPath: [],
     queryId: null, conversationId: null,
@@ -565,6 +680,15 @@ export const useFlowStore = create((set, get) => ({
         // Results can land in any lane — show the overview so highlighted
         // lanes are visible instead of staying inside one focused lane.
         focusLaneId: null,
+
+  // Dry-run trace: source-ordered walk of everything one function calls.
+  // `traceStep` is the step being shown (-1 = the whole trace at once).
+  traceOpen: false,
+  trace: null,
+  traceStep: -1,
+  traceStarts: [],
+  traceLoading: false,
+  traceError: "",
       });
     } catch (e) {
       set({ error: String(e) });
@@ -631,6 +755,145 @@ export const useFlowStore = create((set, get) => ({
     // Back at nodes/edges that may no longer reflect the current code.
     set({ viewHistory: [], currentDepth: null });
     await get().loadInitial();
+  },
+
+  // Review opens on the queue; a branch or the working copy is picked from there.
+  openReview: () => {
+    set({ reviewOpen: true });
+    if (!get().reviewTarget && !get().queue && !get().queueLoading) get().loadQueue();
+  },
+  closeReview: () => set({ reviewOpen: false }),
+  backToQueue: () => {
+    set({ reviewTarget: null, review: null, reviewError: "", aiResults: {}, aiUsage: null, testRuns: {} });
+    get().loadQueue();  // opened checkouts and disk use changed
+  },
+
+  loadQueue: async (base, days) => {
+    const { graphId } = get();
+    const b = (base ?? get().queueBase).trim() || "main";
+    const d = days ?? (b === get().queueBase ? get().queueDays : 30);  // a refresh keeps the window, a new base resets it
+    if (!graphId) return;
+    set({ queueLoading: true, queueError: "", queueBase: b, queueDays: d });
+    try {
+      const r = await apiFetch(`${API}/queue?graph_id=${graphId}&base=${encodeURIComponent(b)}&days=${d}`);
+      const body = await r.json().catch(() => null);
+      if (!r.ok) throw new Error(body?.detail || `Could not list branches (${r.status})`);
+      set({ queue: body });
+    } catch (e) {
+      set({ queue: null, queueError: e.message || String(e) });
+    } finally {
+      set({ queueLoading: false });
+    }
+  },
+
+  // The author's own change: the working copy against the base, uncommitted edits included.
+  openWorkingCopy: () => {
+    const { graphId, queueBase } = get();
+    set({ reviewTarget: { graphId, ref: null, base: queueBase, committed: false, author: true, label: "My working copy" },
+          aiResults: {}, aiUsage: null, testRuns: {} });
+    get().runReview();
+  },
+
+  // A branch from the queue: checked out into a Flowify-owned worktree, ingested, then reviewed.
+  openBranch: async (ref) => {
+    const { graphId, queueBase } = get();
+    set({ openingRef: ref, queueError: "" });
+    try {
+      const r = await apiFetch(`${API}/queue/open`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ graph_id: graphId, ref, base: queueBase }),
+      });
+      const body = await r.json().catch(() => null);
+      if (!r.ok) throw new Error(body?.detail || `Could not open ${ref} (${r.status})`);
+      set({ reviewTarget: { graphId: body.graph_id, ref, base: queueBase, committed: true, author: false, label: ref },
+            aiResults: {}, aiUsage: null, testRuns: {} });
+      await get().runReview();
+    } catch (e) {
+      set({ queueError: e.message || String(e) });
+    } finally {
+      set({ openingRef: "" });
+    }
+  },
+
+  removeBranch: async (ref) => {
+    const { graphId } = get();
+    await apiFetch(`${API}/queue/worktree?graph_id=${graphId}&ref=${encodeURIComponent(ref)}`, { method: "DELETE" }).catch(() => {});
+    await get().loadQueue();
+  },
+
+  runReview: async (base) => {
+    const t = get().reviewTarget;
+    if (!t) return;
+    if (base) set({ reviewTarget: { ...t, base } });
+    const b = base || t.base;
+    set({ reviewLoading: true, reviewError: "" });
+    try {
+      // Line numbers come from the stored graph, so re-read changed files first.
+      // A failed sync is not fatal: the diff itself reports anything actually wrong.
+      await apiFetch(`${API}/update`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ graph_id: t.graphId }),
+      }).catch(() => {});
+      const r = await apiFetch(`${API}/review?graph_id=${t.graphId}&base=${encodeURIComponent(b)}&committed=${t.committed}`);
+      if (!r.ok) {
+        const body = await r.json().catch(() => null);
+        throw new Error(body?.detail || `Review failed (${r.status})`);
+      }
+      set({ review: await r.json() });
+    } catch (e) {
+      set({ review: null, reviewError: e.message || String(e) });
+    } finally {
+      set({ reviewLoading: false });
+    }
+  },
+
+  // Claude's notes on a few chunks. Costs money, so only ever on a person's click.
+  runAI: async (chunkIds) => {
+    const t = get().reviewTarget;
+    if (!t || !chunkIds.length) return;
+    set({ aiLoading: true, aiError: "" });
+    try {
+      const r = await apiFetch(`${API}/review/ai`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ graph_id: t.graphId, base: t.base, chunk_ids: chunkIds, author: t.author }),
+      });
+      const body = await r.json().catch(() => null);
+      if (!r.ok) throw new Error(body?.detail || `Claude review failed (${r.status})`);
+      set({ aiResults: { ...get().aiResults, ...body.results }, aiUsage: body.usage });
+    } catch (e) {
+      set({ aiError: e.message || String(e) });
+    } finally {
+      set({ aiLoading: false });
+    }
+  },
+
+  runChunkTests: async (chunkId) => {
+    const t = get().reviewTarget;
+    if (!t) return;
+    set({ testRuns: { ...get().testRuns, [chunkId]: { running: true } } });
+    try {
+      const r = await apiFetch(`${API}/review/tests`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ graph_id: t.graphId, base: t.base, chunk_id: chunkId }),
+      });
+      const body = await r.json().catch(() => null);
+      if (!r.ok) throw new Error(body?.detail || `Tests failed to start (${r.status})`);
+      set({ testRuns: { ...get().testRuns, [chunkId]: body } });
+    } catch (e) {
+      set({ testRuns: { ...get().testRuns, [chunkId]: { error: e.message || String(e) } } });
+    }
+  },
+
+  saveNotes: async (chunks) => {
+    const t = get().reviewTarget;
+    const r = await apiFetch(`${API}/review/notes`, {
+      method: "PUT", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ graph_id: t.graphId, chunks }),
+    });
+    const body = await r.json().catch(() => null);
+    if (!r.ok) throw new Error(body?.detail || `Could not save notes (${r.status})`);
+    set({ review: { ...get().review, notes: body } });
+    return body;
   },
 
   openSummary: () => {

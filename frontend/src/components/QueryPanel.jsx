@@ -33,13 +33,13 @@ export default function QueryPanel() {
           aria-label="Ask a question about this codebase"
           autoComplete="off"
           spellCheck={false}
-          className="flex-1 bg-transparent text-sm text-slate-200 placeholder:text-slate-600 focus-visible:outline-none"
+          className="flex-1 bg-transparent text-sm text-slate-200 placeholder:text-slate-400 focus-visible:outline-none"
           placeholder="e.g. Where is authentication handled…"
           value={q}
           onChange={(e) => setQ(e.target.value)}
         />
         {explanation && (
-          <span className="text-[10px] text-amber-500/80 shrink-0 hidden sm:block">Results →</span>
+          <span className="text-[11px] text-amber-500/80 shrink-0 hidden sm:block">Results →</span>
         )}
         <button
           type="submit"
@@ -49,7 +49,7 @@ export default function QueryPanel() {
           {loading ? "Asking…" : "Ask"}
         </button>
       </form>
-      <div className="mt-1.5 px-1 text-[10px] text-slate-700">
+      <div className="mt-1.5 px-1 text-[11px] text-slate-400">
         Press Enter to search · results appear in the panel →
       </div>
     </div>

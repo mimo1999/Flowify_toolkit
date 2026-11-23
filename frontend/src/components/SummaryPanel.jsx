@@ -72,14 +72,14 @@ function Mermaid({ code }) {
 function Section({ title, children }) {
   return (
     <div>
-      <h3 className="text-[10px] uppercase tracking-widest text-blue-400/80 font-semibold mb-1.5">{title}</h3>
+      <h3 className="text-[11px] uppercase tracking-widest text-blue-400/80 font-semibold mb-1.5">{title}</h3>
       {children}
     </div>
   );
 }
 
 function Chips({ items, color }) {
-  if (!items || items.length === 0) return <div className="text-slate-600 text-xs italic">—</div>;
+  if (!items || items.length === 0) return <div className="text-slate-400 text-xs italic">—</div>;
   return (
     <div className="flex flex-wrap gap-1.5">
       {items.map((t) => (
@@ -122,7 +122,7 @@ export default function SummaryPanel() {
             <span aria-hidden="true" className="text-sm">📄</span>
             <h2 id="summary-title" className="text-sm font-semibold text-white">Repository Summary</h2>
             {summary?.fallback_used && (
-              <span className="text-[9px] px-1.5 py-0.5 rounded-full border border-amber-800/50 bg-amber-950/40 text-amber-400">
+              <span className="text-[11px] px-1.5 py-0.5 rounded-full border border-amber-800/50 bg-amber-950/40 text-amber-400">
                 heuristic
               </span>
             )}
@@ -132,7 +132,7 @@ export default function SummaryPanel() {
               onClick={() => fetchSummary(true)}
               disabled={loading}
               title="Regenerate summary" aria-label="Regenerate Summary"
-              className="flex items-center gap-1 text-[10px] px-2 py-1 rounded text-slate-400 hover:text-slate-200 hover:bg-slate-800 disabled:opacity-40 transition-colors"
+              className="flex items-center gap-1 text-[11px] px-2 py-1 rounded text-slate-400 hover:text-slate-200 hover:bg-slate-800 disabled:opacity-40 transition-colors"
             >
               <RefreshIcon /> Regenerate
             </button>
@@ -190,7 +190,7 @@ export default function SummaryPanel() {
                   <ol className="flex flex-col gap-2">
                     {summary.flows.map((f) => (
                       <li key={f.step} className="flex gap-2.5">
-                        <span className="shrink-0 w-5 h-5 rounded-full bg-blue-900/40 border border-blue-700/50 text-blue-300 text-[10px] flex items-center justify-center font-mono mt-0.5">
+                        <span className="shrink-0 w-5 h-5 rounded-full bg-blue-900/40 border border-blue-700/50 text-blue-300 text-[11px] flex items-center justify-center font-mono mt-0.5">
                           {f.step}
                         </span>
                         <div className="min-w-0">
