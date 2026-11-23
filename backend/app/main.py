@@ -13,6 +13,7 @@ import hashlib
 import logging
 import os
 import re as _re
+import subprocess
 import uuid
 from pathlib import Path as _Path
 
@@ -22,7 +23,7 @@ from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from . import (
-    agent_export, pipeline, storage, retrieval, module_abstractor, learning,
+    agent_export, ingestion, pipeline, pr_impact, storage, trace as trace_mod, retrieval, module_abstractor, learning,
     knowledge as knowledge_mod, graph_analytics, report as report_mod,
 )
 # Imported from .errors, not via the `pipeline` module reference above, so it
@@ -33,8 +34,9 @@ from .errors import RepoLimitError
 from .models import (
     AgentGraphRequest, IngestRequest, UpdateRequest, QueryRequest, QueryResponse,
     FeedbackRequest, MCPIngestResponse, MCPQueryResponse,
-    ImpactAnalysis,
+    ImpactAnalysis, ReviewAIRequest, ReviewTestsRequest, ReviewNotesRequest, QueueOpenRequest,
 )
+from . import ai_review, contract_checks, review_queue
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -364,7 +366,50 @@ def get_limits():
         "max_nodes": _MAX_INGEST_NODES if IS_SERVER_MODE else None,
         "max_parse_seconds": _MAX_PARSE_SECONDS if IS_SERVER_MODE else None,
         "max_clone_mb": int(os.environ.get("FLOWIFY_MAX_CLONE_MB", "100")),
+        "excluded_dirs": sorted(ingestion.excluded_dirs()),
     }
+
+
+@api.get("/trace_starts")
+def get_trace_starts(graph_id: str, q: str = "", limit: int = 12):
+    """Where a dry-run trace can begin: a name search when `q` is given,
+    otherwise entry points ranked by how much of the graph they reach."""
+    _check_owned(graph_id)
+    limit = max(1, min(limit, 50))
+    if q.strip():
+        idx = trace_mod.index(graph_id)
+        found = storage.search_callables(graph_id, q.strip(), limit)
+        for f in found:
+            f["callees"] = len({t for t, *_ in idx["calls"].get(f["id"], ())})
+            f["callers"] = idx["callers"].get(f["id"], 0)
+            f["module"] = idx["module_of"].get(f["id"])
+        return {"graph_id": graph_id, "starts": found}
+    return {"graph_id": graph_id, "starts": trace_mod.starts(graph_id, limit)}
+
+
+@api.get("/trace")
+def get_trace(graph_id: str, start: str, max_depth: int = 6, max_steps: int = 80, fanout: int = 6):
+    """Source-ordered dry run of everything `start` calls, across files and modules."""
+    _check_owned(graph_id)
+    result = trace_mod.dry_run(
+        graph_id, start,
+        max_depth=max(1, min(max_depth, 10)),
+        max_steps=max(5, min(max_steps, 200)),
+        fanout=max(2, min(fanout, 12)),
+    )
+    if result is None:
+        raise HTTPException(404, "start node not found in this graph")
+    return result
+
+
+@api.get("/trace_path")
+def get_trace_path(graph_id: str, source: str, target: str):
+    """Shortest call chain between two functions (steps in the /trace format)."""
+    _check_owned(graph_id)
+    result = trace_mod.path(graph_id, source, target)
+    if result is None:
+        raise HTTPException(404, "source node not found in this graph")
+    return result
 
 
 @api.post("/ingest_repo")
@@ -564,11 +609,11 @@ def get_graph(graph_id: str, depth: int = 1, tier: int | None = None):
     top call-graph tier (callers-of-nothing); callees load via /expand.
     """
     _check_owned(graph_id)
-    payload = storage.load_light(graph_id)
+    payload = storage.load_modules(graph_id)
     if payload is None:
         raise HTTPException(404, "graph not found")
     depth = max(1, min(3, depth))
-    func_by_id, function_edges = _serialize_payload(payload)
+    func_by_id, function_edges = storage.view_rows(graph_id, depth)
     view = module_abstractor.collapse_for_depth(
         payload.module_nodes, payload.module_edges,
         payload.module_to_functions, func_by_id, depth, function_edges,
@@ -724,10 +769,12 @@ def get_impact(graph_id: str, node_id: str):
     # Build adjacency structures
     callers_map: dict[str, list[str]] = {}
     callees_map: dict[str, list[str]] = {}
+    edge_meta: dict[tuple, dict] = {}
     for e in payload.function_edges:
         if e.relationship == "INVOKES" or e.type == "CALLS":
             callees_map.setdefault(e.source_id, []).append(e.target_id)
             callers_map.setdefault(e.target_id, []).append(e.source_id)
+            edge_meta[(e.source_id, e.target_id)] = e.adapter_metadata or {}
 
     # Direct callers
     direct_callers = callers_map.get(node_id, [])
@@ -735,9 +782,13 @@ def get_impact(graph_id: str, node_id: str):
     for cid in direct_callers[:30]:
         n = func_by_id.get(cid)
         if n:
+            meta = edge_meta.get((cid, node_id), {})
             callers_data.append({
                 "id": n.id, "name": n.name, "file_path": n.file_path,
                 "semantic_kind": n.adapter_metadata.get("semantic_kind", "CALLS"),
+                "confidence": meta.get("resolution_confidence"),
+                "reason": meta.get("resolution_reasoning"),
+                "line": meta.get("line"),
             })
 
     # Direct callees
@@ -759,49 +810,213 @@ def get_impact(graph_id: str, node_id: str):
             if n.name not in db_interactions:
                 db_interactions.append(n.name)
 
-    # BFS downstream to count all affected nodes
-    visited: set[str] = {node_id}
-    frontier = list(direct_callees)
-    while frontier:
-        nid = frontier.pop()
-        if nid in visited:
-            continue
-        visited.add(nid)
-        frontier.extend(callees_map.get(nid, []))
-    downstream_count = len(visited) - 1  # exclude self
+    # A change breaks the functions that call it, so the blast radius is upstream.
+    up = trace_mod.upstream(callers_map, node_id)
+    affected_module_names = [
+        m.name for m in payload.module_nodes
+        if node_id not in m.linked_function_ids and up & set(m.linked_function_ids)
+    ]
 
-    # Affected modules
-    affected_module_names = []
-    for m in payload.module_nodes:
-        affected_fids = set(m.linked_function_ids) & visited
-        if affected_fids and node_id not in m.linked_function_ids:
-            affected_module_names.append(m.name)
-
-    # Risk level
     target_semantic_kind = target.adapter_metadata.get("semantic_kind", "CALLS")
     criticality = target.semantics.criticality if target.semantics else "medium"
-    if (downstream_count > 30 or criticality == "critical" or
-            target_semantic_kind in ("EXPOSES_API", "USES_DB")):
-        risk = "critical"
-    elif downstream_count > 10 or criticality == "high":
-        risk = "high"
-    elif downstream_count > 3 or criticality == "medium":
-        risk = "medium"
-    else:
-        risk = "low"
+    possible_count, possible, name_shared = storage.possible_callers(graph_id, target.name, up | {node_id})
+    # a name too common to check still must not read as safe: it counts like 3 unconfirmed callers
+    risk = trace_mod.risk_level(len(up), criticality, target_semantic_kind, possible_count + (3 if name_shared else 0))
+
+    stats = storage.load_meta(graph_id, "call_resolution") or {}
+    # calls to names defined in this repo: resolved to one function vs. left out as ambiguous
+    named = stats.get("resolved", 0) + stats.get("ambiguous", 0)
+    coverage = round(stats["resolved"] / named, 2) if named and "ambiguous" in stats else None
 
     return ImpactAnalysis(
         node_id=node_id,
         node_name=target.name,
         file_path=target.file_path,
         callers=callers_data,
+        possible_callers=possible,
+        possible_caller_count=possible_count,
+        name_shared=name_shared,
         callees=callees_data,
         db_interactions=db_interactions,
         affected_modules=list(dict.fromkeys(affected_module_names))[:10],  # dedup, preserve order
         caller_count=len(direct_callers),
+        upstream_count=len(up),
+        coverage=coverage,
         risk_level=risk,
         semantic_kind=target_semantic_kind,
     )
+
+
+@api.get("/focus")
+def get_focus_node(graph_id: str, node_id: str):
+    """One function in the graph's node shape, so the UI can re-root the canvas on it."""
+    _check_owned(graph_id)
+    payload = storage.load_light(graph_id)
+    if payload is None:
+        raise HTTPException(404, "graph not found")
+    func_by_id, _ = _serialize_payload(payload)
+    if node_id not in func_by_id:
+        raise HTTPException(404, "node not found")
+    n = func_by_id[node_id]
+    return {
+        "id": node_id, "label": n.get("name", node_id), "kind": n.get("type", "function"),
+        "description": n.get("summary", "") or "", "file_path": n.get("file_path"),
+        "adapter_metadata": n.get("adapter_metadata") or {},
+    }
+
+
+MAX_SOURCE_LINES = 400
+
+
+@api.get("/node_source")
+def get_node_source(graph_id: str, node_id: str):
+    """Source text of one function plus what the graph knows about it, for the inspector."""
+    _check_owned(graph_id)
+    d = storage.node_source(graph_id, node_id)
+    if d is None:
+        raise HTTPException(404, "node not found")
+    lines = d["code"].splitlines()
+    d["truncated"] = len(lines) > MAX_SOURCE_LINES
+    d["code"] = "\n".join(lines[:MAX_SOURCE_LINES])
+    return d
+
+
+_GIT_REF = _re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_./@^~-]{0,199}$")  # no leading '-': never a git option
+
+
+def _local_checkout(graph_id: str, *refs: str):
+    """The graph's payload, when it is a local git checkout this process may run git in."""
+    _check_owned(graph_id)
+    if any(not _GIT_REF.match(r) for r in refs):
+        raise HTTPException(400, "base must be a branch, tag or commit")
+    payload = storage.load_light(graph_id)
+    if payload is None:
+        raise HTTPException(404, "graph not found")
+    repo = payload.repo_path
+    if IS_SERVER_MODE or repo.startswith(("https://", "http://")) or not os.path.isdir(repo):
+        raise HTTPException(400, "Reviewing a change needs a local git checkout of the repository.")
+    return payload
+
+
+def _review(payload, base: str, committed: bool = False) -> dict:
+    try:
+        out = pr_impact.review(payload, base, committed=committed)
+    except (subprocess.CalledProcessError, FileNotFoundError) as e:
+        detail = (getattr(e, "stderr", "") or "").strip().splitlines()[-1:] or ["git is not available"]
+        raise HTTPException(400, f"Could not diff against '{base}': {detail[0]}")
+    out["parts"] = review_queue.parts(out["functions"])
+    out["notes"] = review_queue.read_notes(payload.repo_path)
+    out["ai_available"] = ai_review.available()
+    return out
+
+
+@api.get("/review")
+def review_change(graph_id: str, base: str = "HEAD", committed: bool = False):
+    """Functions changed in the working tree since `base`, each with who depends on it.
+
+    The UI form of pr_impact.py. `base="HEAD"` reviews uncommitted edits; a branch name
+    reviews everything since the branch point (`committed=True`: commits only, for a branch
+    opened from the queue). Line spans come from the stored graph, so the caller should sync
+    the graph first if files changed since ingest."""
+    return _review(_local_checkout(graph_id, base), base, committed)
+
+
+def _chunks_by_id(out: dict) -> dict:
+    return {c["id"]: c for c in out["functions"] + out["module_chunks"]}
+
+
+@api.post("/review/ai")
+def review_ai(req: ReviewAIRequest):
+    """Claude's notes on a few chunks, grounded in the code it was shown. Nothing runs unless asked."""
+    payload = _local_checkout(req.graph_id, req.base)
+    if not ai_review.available():
+        raise HTTPException(400, "Set ANTHROPIC_API_KEY to ask Claude about a change.")
+    out = pr_impact.review(payload, req.base)
+    chunks = _chunks_by_id(out)
+    by_id = {n.id: n for n in payload.function_nodes}
+    calls: dict = {}
+    for e in payload.function_edges:
+        if (e.relationship == "INVOKES" or e.type == "CALLS") and e.target_id in by_id:
+            calls.setdefault(e.source_id, []).append(e.target_id)
+    src = contract_checks.Sources(payload.repo_path, None)
+    items = []
+    for cid in req.chunk_ids:
+        c = chunks.get(cid)
+        if c is None:
+            continue
+        n = by_id.get(cid)
+        span = pr_impact._span(n) if n else (c["excerpt"]["start_line"], c["excerpt"]["start_line"] + c["excerpt"]["code"].count("\n"))
+        callees = [{"name": by_id[t].name, "file": by_id[t].file_path, "line": pr_impact._span(by_id[t])[0]}
+                   for t in calls.get(cid, []) if pr_impact._span(by_id[t])]
+        text, allowed = ai_review.build_context(c, span, lambda p: src.head(p)[0], callees)
+        items.append((cid, text, allowed))
+    res = ai_review.review_chunks(items)
+    if not req.author:  # fixes are for the author to apply, not for the reviewer to review
+        for r in res["results"].values():
+            for note in r["notes"]:
+                note["fix"] = None
+    return res
+
+
+@api.post("/review/tests")
+def review_tests(req: ReviewTestsRequest):
+    """Run the pytest tests that reach one chunk. The ids come from the graph, not the request."""
+    payload = _local_checkout(req.graph_id, req.base)
+    c = _chunks_by_id(pr_impact.review(payload, req.base)).get(req.chunk_id)
+    if c is None:
+        raise HTTPException(404, "that change is not in the current diff")
+    return {"head": pr_impact._git(payload.repo_path, "rev-parse", "HEAD"), "hash": c["hash"],
+            **review_queue.run_tests(payload.repo_path, c["impact"]["tests"].get("run", []))}
+
+
+@api.put("/review/notes")
+def review_notes(req: ReviewNotesRequest):
+    """Write the author's notes to `.flowify/review.json` in the checkout (the author commits it)."""
+    payload = _local_checkout(req.graph_id)
+    try:
+        return review_queue.write_notes(payload.repo_path, pr_impact._git(payload.repo_path, "rev-parse", "HEAD"), req.chunks)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@api.get("/queue")
+def review_queue_list(graph_id: str, base: str = "main", days: int = 30):
+    """Branches ahead of `base` with a commit in the last `days`, each scored from this graph
+    (an estimate until opened)."""
+    payload = _local_checkout(graph_id, base)
+    rows = []
+    for b in review_queue.branches(payload.repo_path, base, max(1, min(days, 3650))):
+        try:
+            rows.append({**b, **review_queue.triage(payload, base, b["ref"])})
+        except subprocess.CalledProcessError:
+            continue
+    rows.sort(key=lambda r: -(r["worst"] or {}).get("score", 0))
+    opened = {p.name for p in review_queue.worktrees(payload.repo_path)}
+    for r in rows:
+        r["opened"] = review_queue.worktree_path(payload.repo_path, r["ref"]).name in opened
+    return {"base": base, "days": days, "branches": rows, "disk_bytes": review_queue.disk_usage(payload.repo_path),
+            "max_worktrees": review_queue.MAX_WORKTREES}
+
+
+@api.post("/queue/open")
+def review_queue_open(req: QueueOpenRequest):
+    """Check a branch out into a Flowify-owned worktree, ingest it (or update it), return its graph."""
+    payload = _local_checkout(req.graph_id, req.ref, req.base)
+    try:
+        path = review_queue.open_worktree(payload.repo_path, req.ref)
+    except subprocess.CalledProcessError as e:
+        raise HTTPException(400, f"Could not check out '{req.ref}': {(e.stderr or '').strip()[-200:]}")
+    gid = storage.find_graph_by_repo_path(str(path))
+    wt = pipeline.update(gid) if gid else None
+    wt = wt or pipeline.ingest(str(path))
+    return {"graph_id": wt.graph_id, "repo_path": str(path), "ref": req.ref, "base": req.base}
+
+
+@api.delete("/queue/worktree")
+def review_queue_remove(graph_id: str, ref: str):
+    payload = _local_checkout(graph_id, ref)
+    review_queue.remove_worktree(payload.repo_path, ref)
+    return {"removed": ref}
 
 
 @api.post("/update")
@@ -809,7 +1024,7 @@ def update_graph(req: UpdateRequest):
     _check_owned(req.graph_id)
     existing = storage.load_light(req.graph_id)
     if existing and existing.repo_path.startswith(("https://", "http://")):
-        # pipeline.update() diffs an on-disk git checkout via GitPython; a
+        # pipeline.update() diffs an on-disk git checkout via the git CLI; a
         # URL-sourced graph has no such checkout (it was cloned to a temp
         # dir that's already been deleted). Re-ingesting from the URL is a
         # full re-clone, not an incremental diff, so ask the caller to use

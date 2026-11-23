@@ -34,6 +34,7 @@ def mock_pipeline():
 def mock_storage():
     """Mock storage module."""
     with patch('app.main.storage') as mock:
+        mock.possible_callers.return_value = (0, [], 0)  # impact analysis unpacks (count, callers, name_shared)
         yield mock
 
 

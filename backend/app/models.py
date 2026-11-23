@@ -480,6 +480,18 @@ class ImpactAnalysis(BaseModel):
     db_interactions: List[str] = Field(default_factory=list)
     affected_modules: List[str] = Field(default_factory=list)
     caller_count: int = 0
+    possible_callers: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="Functions that call something named like this one, but the graph could not tell which function "
+                    "they meant — so they may be callers this analysis cannot confirm",
+    )
+    possible_caller_count: int = 0
+    name_shared: int = Field(0, description="When more than a handful of functions share this name: how many. "
+                                            "Calls by that name cannot be attributed, so they are not counted as possible callers")
+    upstream_count: int = Field(0, description="Every function that can reach this one through resolved calls")
+    coverage: Optional[float] = Field(
+        None, description="Share of calls to repo-defined names the graph resolved to one target; "
+                          "the rest are absent from the graph, so counts here are lower bounds")
     risk_level: Literal["low", "medium", "high", "critical"] = "low"
     semantic_kind: str = "CALLS"
 
@@ -654,3 +666,28 @@ class FeedbackRequest(BaseModel):
         None,
         description="User corrections to improve results"
     )
+
+
+class ReviewAIRequest(BaseModel):
+    """Ask Claude about a few change chunks of a local review."""
+    graph_id: str
+    base: str = "HEAD"
+    chunk_ids: List[str] = Field(default_factory=list, max_length=50)
+    author: bool = False  # author mode shows suggested fixes
+
+
+class ReviewTestsRequest(BaseModel):
+    graph_id: str
+    base: str = "HEAD"
+    chunk_id: str
+
+
+class ReviewNotesRequest(BaseModel):
+    graph_id: str
+    chunks: Dict[str, Any] = Field(default_factory=dict)
+
+
+class QueueOpenRequest(BaseModel):
+    graph_id: str
+    ref: str
+    base: str = "main"
