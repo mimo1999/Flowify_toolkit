@@ -1171,15 +1171,18 @@ class OpenAIProvider(LLMProvider):
         api_key: str | None = None,
         base_url: str | None = None,
         model: str | None = None,
+        extra_headers: dict | None = None,
     ) -> None:
         self.api_key = api_key or os.environ.get("OPENAI_API_KEY", "")
         self.base_url = (base_url or os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")).rstrip("/")
         self.model = model or os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
+        self.extra_headers = extra_headers or {}
 
     def _call(self, prompt: str) -> str:
         resp = requests.post(
             f"{self.base_url}/chat/completions",
-            headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
+            headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json",
+                     **self.extra_headers},
             json={
                 "model": self.model,
                 "messages": [{"role": "user", "content": prompt}],
@@ -1199,26 +1202,8 @@ class CopilotProvider(OpenAIProvider):
             api_key=os.environ.get("GITHUB_TOKEN", ""),
             base_url=os.environ.get("COPILOT_API_URL", "https://api.githubcopilot.com"),
             model=os.environ.get("COPILOT_MODEL", "gpt-4o"),
+            extra_headers={"Copilot-Integration-Id": "flowify"},  # Copilot requires this header
         )
-
-    def _call(self, prompt: str) -> str:
-        # Copilot requires an extra header
-        resp = requests.post(
-            f"{self.base_url}/chat/completions",
-            headers={
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json",
-                "Copilot-Integration-Id": "flowify",
-            },
-            json={
-                "model": self.model,
-                "messages": [{"role": "user", "content": prompt}],
-                "max_tokens": 512,
-            },
-            timeout=30,
-        )
-        resp.raise_for_status()
-        return resp.json()["choices"][0]["message"]["content"]
 
 
 class OpenClawProvider(OpenAIProvider):
