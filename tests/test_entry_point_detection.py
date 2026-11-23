@@ -1,7 +1,7 @@
 import sys
 from pathlib import Path
 
-sys.path.insert(0, "backend")
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "backend"))
 
 from app import graph_builder, module_abstractor
 from app.llm_provider import _heuristic_repo_analysis
@@ -74,7 +74,8 @@ def test_python_m_invocations_are_authoritative_entry_points(tmp_path: Path):
         "ml_model_training.ml_main",
         "ts_model_training.main",
     ]
-    assert [node["label"] for node in entry_nodes] == [
+    # "label" is the short file stem; "entry_module" carries the dotted path.
+    assert [node["entry_module"] for node in entry_nodes] == [
         "ml_model_training.ml_main",
         "ts_model_training.main",
     ]

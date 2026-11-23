@@ -1,0 +1,78 @@
+{
+  "repo": "flask",
+  "pytest_exit": 1,
+  "functions": 385,
+  "static_edges": 145,
+  "runtime_edges": 386,
+  "recall": 0.256,
+  "missed": {
+    "known_ambiguous": 87,
+    "invisible": 200,
+    "invisible_by_kind": {
+      "method": 157,
+      "other dunder": 16,
+      "function": 5,
+      "constructor (__init__)": 22
+    }
+  },
+  "precision_by_tier": {
+    "self-call": {
+      "verified": 64,
+      "unjudged": 12,
+      "refuted": 16,
+      "precision": 0.8
+    },
+    "unique-repo-wide": {
+      "verified": 17,
+      "unjudged": 8,
+      "refuted": 2,
+      "precision": 0.895
+    },
+    "same-file": {
+      "unjudged": 8,
+      "verified": 15,
+      "precision": 1.0
+    },
+    "module-alias": {
+      "verified": 2,
+      "precision": 1.0
+    },
+    "receiver-class": {
+      "verified": 1,
+      "precision": 1.0
+    }
+  },
+  "precision_by_confidence": {
+    "0.55": {
+      "unjudged": 4,
+      "refuted": 2,
+      "precision": 0.0
+    },
+    "0.65": {
+      "verified": 17,
+      "unjudged": 4,
+      "precision": 1.0
+    },
+    "0.8": {
+      "unjudged": 8,
+      "verified": 15,
+      "precision": 1.0
+    },
+    "0.85": {
+      "verified": 1,
+      "precision": 1.0
+    },
+    "0.9": {
+      "verified": 2,
+      "precision": 1.0
+    },
+    "0.95": {
+      "verified": 64,
+      "unjudged": 12,
+      "refuted": 16,
+      "precision": 0.8
+    }
+  },
+  "overall_precision": 0.846,
+  "judged_share": 0.807
+}

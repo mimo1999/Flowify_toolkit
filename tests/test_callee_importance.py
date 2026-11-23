@@ -8,11 +8,13 @@ from app import graph_analytics, main
 
 
 def test_importance_scores_rank_central_nodes_higher():
-    metrics = {
+    # Importance is a percentile, so it needs a population to rank against.
+    metrics = {f"n{i}": {"pagerank": 0.001 * i, "in_degree": i // 4, "criticality": "low"} for i in range(40)}
+    metrics.update({
         "hub": {"pagerank": 0.2, "in_degree": 10, "criticality": "high"},
         "mid": {"pagerank": 0.05, "in_degree": 3, "criticality": "low"},
-        "leaf": {"pagerank": 0.001, "in_degree": 0, "criticality": "low"},
-    }
+        "leaf": {"pagerank": 0.0, "in_degree": 0, "criticality": "low"},
+    })
     s = graph_analytics.importance_scores(metrics)
     assert s["hub"] > s["mid"] > s["leaf"]
     assert all(0.0 <= v <= 1.0 for v in s.values())

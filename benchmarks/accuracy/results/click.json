@@ -1,0 +1,110 @@
+{
+  "repo": "click",
+  "pytest_exit": 1,
+  "functions": 583,
+  "static_edges": 466,
+  "runtime_edges": 654,
+  "recall": 0.52,
+  "dead_code": {
+    "candidates": 15,
+    "called_at_runtime": 0,
+    "false_positive_rate": 0.0,
+    "examples": []
+  },
+  "missed": {
+    "known_ambiguous": 132,
+    "invisible": 182,
+    "invisible_by_kind": {
+      "method": 116,
+      "other dunder": 31,
+      "constructor (__init__)": 13,
+      "function": 22
+    }
+  },
+  "precision_by_tier": {
+    "self-call": {
+      "verified": 111,
+      "unjudged": 22,
+      "refuted": 7,
+      "precision": 0.941
+    },
+    "same-file": {
+      "unjudged": 27,
+      "verified": 86,
+      "refuted": 3,
+      "precision": 0.966
+    },
+    "unique-repo-wide": {
+      "verified": 58,
+      "unjudged": 21,
+      "refuted": 3,
+      "precision": 0.951
+    },
+    "unique-method": {
+      "verified": 48,
+      "unjudged": 25,
+      "refuted": 2,
+      "precision": 0.96
+    },
+    "constructor": {
+      "verified": 34,
+      "unjudged": 16,
+      "precision": 1.0
+    },
+    "module-alias": {
+      "verified": 3,
+      "precision": 1.0
+    }
+  },
+  "precision_by_confidence": {
+    "0.5": {
+      "verified": 42,
+      "unjudged": 24,
+      "refuted": 2,
+      "precision": 0.955
+    },
+    "0.55": {
+      "refuted": 3,
+      "unjudged": 3,
+      "precision": 0.0
+    },
+    "0.6": {
+      "verified": 6,
+      "unjudged": 1,
+      "precision": 1.0
+    },
+    "0.65": {
+      "verified": 58,
+      "unjudged": 18,
+      "precision": 1.0
+    },
+    "0.75": {
+      "verified": 21,
+      "unjudged": 9,
+      "precision": 1.0
+    },
+    "0.8": {
+      "unjudged": 27,
+      "verified": 86,
+      "refuted": 3,
+      "precision": 0.966
+    },
+    "0.85": {
+      "verified": 13,
+      "unjudged": 7,
+      "precision": 1.0
+    },
+    "0.9": {
+      "verified": 3,
+      "precision": 1.0
+    },
+    "0.95": {
+      "verified": 111,
+      "unjudged": 22,
+      "refuted": 7,
+      "precision": 0.941
+    }
+  },
+  "overall_precision": 0.958,
+  "judged_share": 0.762
+}

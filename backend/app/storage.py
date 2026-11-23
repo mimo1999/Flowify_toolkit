@@ -338,7 +338,7 @@ def save(payload: GraphPayload, owner: Optional[str] = None) -> None:
             )
 
 
-def _load_payload(graph_id: str, include_code: bool) -> Optional[GraphPayload]:
+def _load_payload(graph_id: str, include_code: bool, modules_only: bool = False) -> Optional[GraphPayload]:
     db = _conn()
 
     hdr = db.execute(
@@ -352,7 +352,9 @@ def _load_payload(graph_id: str, include_code: bool) -> Optional[GraphPayload]:
     # Iterate the cursor rather than .fetchall(): fetchall materializes every
     # sqlite3.Row *in addition to* the model objects built from them, so peak
     # memory was holding two full copies of the graph at once.
-    if include_code:
+    if modules_only:
+        node_rows = []
+    elif include_code:
         node_rows = db.execute(
             "SELECT * FROM nodes WHERE graph_id=?", (graph_id,)
         )
@@ -367,7 +369,7 @@ def _load_payload(graph_id: str, include_code: bool) -> Optional[GraphPayload]:
     function_nodes = [_row_to_node(r, include_code) for r in node_rows]
 
     # edges
-    edge_rows = db.execute(
+    edge_rows = [] if modules_only else db.execute(
         "SELECT * FROM edges WHERE graph_id=?", (graph_id,)
     )
     function_edges = [
@@ -469,6 +471,35 @@ def load_light(graph_id: str) -> Optional[GraphPayload]:
     return _load_payload(graph_id, include_code=False)
 
 
+def load_modules(graph_id: str) -> Optional[GraphPayload]:
+    """The module layer only: no function nodes or edges."""
+    return _load_payload(graph_id, include_code=False, modules_only=True)
+
+
+def view_rows(graph_id: str, depth: int) -> tuple:
+    """Just the fields collapse_for_depth reads, as plain dicts."""
+    if depth <= 1:
+        return {}, []
+    db, strs = _conn(), {}
+    share = lambda s: strs.setdefault(s, s)
+    meta = "adapter_metadata" if depth >= 3 else "NULL"
+    nodes = {}
+    for i, name, fp, typ, summary, md in db.execute(
+        f"SELECT id, name, file_path, type, summary, {meta} FROM nodes WHERE graph_id=?", (graph_id,)
+    ):
+        # Same defaults as _row_to_node, for rows written by older versions.
+        nodes[share(i)] = {"name": name or "", "file_path": share(fp or ""), "type": share(typ or "function"),
+                           "summary": summary,
+                           "adapter_metadata": json.loads(md) if md else {}}
+    edges = [
+        {"source_id": share(s), "target_id": share(t), "type": share(k), "relationship": share(r)}
+        for s, t, k, r in db.execute(
+            "SELECT source_id, target_id, type, relationship FROM edges "
+            "WHERE graph_id=? AND (relationship='INVOKES' OR type='CALLS')", (graph_id,))
+    ]
+    return nodes, edges
+
+
 def list_graphs(owner: Optional[str] = None) -> list[str]:
     """Return stored graph IDs, newest first. If *owner* is given, only
     graphs tagged with that session id are returned (server-mode scoping);
@@ -498,6 +529,126 @@ def find_graph_by_repo_path(repo_path: str) -> Optional[str]:
         (repo_path,),
     ).fetchone()
     return row["graph_id"] if row else None
+
+
+def call_index(graph_id: str) -> dict:
+    """Everything a trace needs, as plain dicts and without building the
+    Pydantic payload: `calls` (source -> [(target, line, ctx, confidence, reason)] in
+    the order the calls appear in the source), `callers` (target -> count) and
+    `module_of` (function id -> module name)."""
+    db = _conn()
+    calls: dict = {}
+    callers: dict = {}
+    for r in db.execute(
+        "SELECT source_id, target_id, adapter_meta FROM edges "
+        "WHERE graph_id=? AND relationship='INVOKES' ORDER BY rowid",
+        (graph_id,),
+    ):
+        md = json.loads(r["adapter_meta"]) if r["adapter_meta"] else {}
+        calls.setdefault(r["source_id"], []).append(
+            (r["target_id"], md.get("line"), md.get("ctx"), md.get("resolution_confidence"), md.get("resolution_reasoning"))
+        )
+        callers[r["target_id"]] = callers.get(r["target_id"], 0) + 1
+    module_of = {
+        r["function_id"]: r["name"]
+        for r in db.execute(
+            "SELECT m.function_id, n.name FROM module_to_functions m "
+            "JOIN module_nodes n ON n.id = m.module_id AND n.graph_id = m.graph_id "
+            "WHERE m.graph_id=?",
+            (graph_id,),
+        )
+    }
+    return {"calls": calls, "callers": callers, "module_of": module_of}
+
+
+def nodes_brief(graph_id: str, ids: list) -> dict:
+    """id -> the few fields a trace step shows, for just these nodes."""
+    out: dict = {}
+    db = _conn()
+    for i in range(0, len(ids), 500):
+        chunk = ids[i:i + 500]
+        marks = ",".join("?" * len(chunk))
+        for r in db.execute(
+            f"SELECT id, name, file_path, type, kind, lineno, summary, adapter_metadata "
+            f"FROM nodes WHERE graph_id=? AND id IN ({marks})",
+            (graph_id, *chunk),
+        ):
+            md = json.loads(r["adapter_metadata"]) if r["adapter_metadata"] else {}
+            out[r["id"]] = {
+                "id": r["id"], "name": r["name"], "file_path": r["file_path"],
+                "type": r["type"], "kind": r["kind"], "lineno": r["lineno"],
+                "summary": r["summary"] or "",
+                "semantic_kind": md.get("semantic_kind"),
+                "unresolved_calls": md.get("unresolved_calls", []),
+            }
+    return out
+
+
+def node_source(graph_id: str, node_id: str) -> Optional[dict]:
+    """One node's source text and position, read without loading the whole graph."""
+    r = _conn().execute(
+        "SELECT code_snippet, lineno, source_span, summary, signature, semantics, kind "
+        "FROM nodes WHERE graph_id=? AND id=?", (graph_id, node_id)).fetchone()
+    if r is None:
+        return None
+    span = json.loads(r["source_span"]) if r["source_span"] else {}
+    return {
+        "code": r["code_snippet"] or "",
+        "start_line": span.get("start_line") or r["lineno"],
+        "end_line": span.get("end_line"),
+        "summary": r["summary"] or "",
+        "signature": json.loads(r["signature"]) if r["signature"] else None,
+        "semantics": json.loads(r["semantics"]) if r["semantics"] else None,
+        "kind": r["kind"],
+    }
+
+
+# ponytail: fixed cut-off. A call to a name N functions share points at any one of them
+# with odds ~1/N; past this it is noise (61k "possible callers" on one vLLM PR, mostly
+# `forward`). Upgrade path: rank by receiver type / imports instead of dropping.
+MAX_NAME_CANDIDATES = 5
+
+
+def possible_callers(graph_id: str, name: str, exclude: set, limit: int = 15) -> tuple:
+    """Functions that made a call named `name` the graph could not pin to one
+    target (it matched several functions), so they may well call the one being
+    asked about. Returns (count, first `limit` as dicts, shared).
+
+    Only names shared by at most MAX_NAME_CANDIDATES functions are counted. `shared`
+    is the number of functions sharing the name when it is over that (else 0): the
+    callers then cannot be told apart by name, which is a caveat, not a count."""
+    needle = '"callee": ' + json.dumps(name)
+    found = []
+    shared = 0
+    for r in _conn().execute(
+        "SELECT id, name, file_path, adapter_metadata FROM nodes "
+        "WHERE graph_id=? AND instr(adapter_metadata, ?) > 0",
+        (graph_id, needle),
+    ):
+        if r["id"] in exclude:
+            continue
+        for u in json.loads(r["adapter_metadata"]).get("unresolved_calls", []):
+            if u.get("callee") == name:
+                if (u.get("candidates") or 0) > MAX_NAME_CANDIDATES:
+                    shared = max(shared, u["candidates"])
+                else:
+                    found.append({"id": r["id"], "name": r["name"], "file_path": r["file_path"],
+                                  "line": u.get("line"), "candidates": u.get("candidates")})
+                break
+    return len(found), found[:limit], shared
+
+
+def search_callables(graph_id: str, query: str, limit: int = 15) -> list:
+    """Functions/methods whose name contains `query`, shortest names first."""
+    like = "%" + query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+    rows = _conn().execute(
+        "SELECT id, name, file_path, type FROM nodes "
+        "WHERE graph_id=? AND kind IN ('function', 'callable') "
+        "AND (name LIKE ? ESCAPE '\\' OR qualified_name LIKE ? ESCAPE '\\') "
+        "ORDER BY length(name), name LIMIT ?",
+        (graph_id, like, like, limit),
+    )
+    return [dict(r) for r in rows]
 
 
 def set_owner(graph_id: str, owner: str) -> None:

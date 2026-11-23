@@ -1,7 +1,7 @@
 import sys
 from pathlib import Path
 
-sys.path.insert(0, "backend")
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "backend"))
 
 from app.graph_builder import build_function_graph, parse_file
 from app.models import FunctionEdge, FunctionNode, GraphPayload

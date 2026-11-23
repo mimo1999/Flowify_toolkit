@@ -1,0 +1,82 @@
+{
+  "repo": "jinja",
+  "pytest_exit": 0,
+  "functions": 758,
+  "static_edges": 552,
+  "runtime_edges": 1372,
+  "recall": 0.327,
+  "missed": {
+    "known_ambiguous": 399,
+    "invisible": 524,
+    "invisible_by_kind": {
+      "function": 93,
+      "method": 230,
+      "constructor (__init__)": 114,
+      "other dunder": 87
+    }
+  },
+  "precision_by_tier": {
+    "self-call": {
+      "verified": 350,
+      "unjudged": 42,
+      "refuted": 17,
+      "precision": 0.954
+    },
+    "same-file": {
+      "verified": 63,
+      "unjudged": 20,
+      "refuted": 1,
+      "precision": 0.984
+    },
+    "unique-repo-wide": {
+      "unjudged": 18,
+      "verified": 25,
+      "refuted": 3,
+      "precision": 0.893
+    },
+    "receiver-class": {
+      "unjudged": 2,
+      "verified": 8,
+      "precision": 1.0
+    },
+    "attribute-type": {
+      "verified": 3,
+      "precision": 1.0
+    }
+  },
+  "precision_by_confidence": {
+    "0.55": {
+      "refuted": 3,
+      "unjudged": 1,
+      "precision": 0.0
+    },
+    "0.65": {
+      "unjudged": 17,
+      "verified": 25,
+      "precision": 1.0
+    },
+    "0.8": {
+      "verified": 63,
+      "unjudged": 20,
+      "refuted": 1,
+      "precision": 0.984
+    },
+    "0.85": {
+      "unjudged": 2,
+      "verified": 8,
+      "precision": 1.0
+    },
+    "0.9": {
+      "verified": 3,
+      "precision": 1.0
+    },
+    "0.95": {
+      "verified": 350,
+      "unjudged": 42,
+      "refuted": 17,
+      "precision": 0.954
+    }
+  },
+  "overall_precision": 0.955,
+  "judged_share": 0.851
+}

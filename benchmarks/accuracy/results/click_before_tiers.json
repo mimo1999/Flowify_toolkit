@@ -1,0 +1,72 @@
+{
+  "repo": "click",
+  "pytest_exit": 1,
+  "functions": 583,
+  "static_edges": 341,
+  "runtime_edges": 654,
+  "recall": 0.394,
+  "missed": {
+    "known_ambiguous": 178,
+    "invisible": 218,
+    "invisible_by_kind": {
+      "other dunder": 31,
+      "method": 119,
+      "constructor (__init__)": 46,
+      "function": 22
+    }
+  },
+  "precision_by_tier": {
+    "self-call": {
+      "verified": 111,
+      "unjudged": 22,
+      "refuted": 7,
+      "precision": 0.941
+    },
+    "same-file": {
+      "unjudged": 27,
+      "verified": 86,
+      "refuted": 3,
+      "precision": 0.966
+    },
+    "unique-repo-wide": {
+      "verified": 58,
+      "unjudged": 21,
+      "refuted": 3,
+      "precision": 0.951
+    },
+    "module-alias": {
+      "verified": 3,
+      "precision": 1.0
+    }
+  },
+  "precision_by_confidence": {
+    "0.55": {
+      "refuted": 3,
+      "unjudged": 3,
+      "precision": 0.0
+    },
+    "0.65": {
+      "verified": 58,
+      "unjudged": 18,
+      "precision": 1.0
+    },
+    "0.8": {
+      "unjudged": 27,
+      "verified": 86,
+      "refuted": 3,
+      "precision": 0.966
+    },
+    "0.9": {
+      "verified": 3,
+      "precision": 1.0
+    },
+    "0.95": {
+      "verified": 111,
+      "unjudged": 22,
+      "refuted": 7,
+      "precision": 0.941
+    }
+  },
+  "overall_precision": 0.952,
+  "judged_share": 0.795
+}

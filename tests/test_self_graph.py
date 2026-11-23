@@ -499,7 +499,10 @@ class TestExpandMainPy:
 
     def test_key_endpoints_in_children(self, expanded):
         names = {c["label"] for c in expanded["children"]}
-        expected = {"ingest_repo", "query_graph", "expand_graph_node", "get_entry_points"}
+        # The file view keeps main.py's 40 most-connected functions (ties alphabetical), so only
+        # well-connected endpoints are stable here. `ingest_repo` has call-degree 2 and sat on
+        # the cut-off: it dropped out when main.py grew past it, which the cap intends.
+        expected = {"query_graph", "expand_graph_node", "get_entry_points"}
         missing = expected - names
         assert not missing, f"main.py expand missing: {missing}"
 
@@ -625,9 +628,10 @@ class TestExpandGraphBuilderPy:
     def test_parse_python_file_exists_in_payload(self, fn_by_id):
         assert _has_fn("parse_python_file", M["gb"], fn_by_id)
 
-    def test_visitor_class_in_children(self, expanded):
-        names = {c["label"] for c in expanded["children"]}
-        assert "_Visitor" in names
+    def test_visitor_class_exists_in_payload(self, fn_by_id):
+        # Same reason as above: the file view keeps the 40 most-connected symbols, and a
+        # class node has no call edges of its own, so it is cut once the file has 40 others.
+        assert _has_fn("_Visitor", M["gb"], fn_by_id)
 
     def test_internal_calls_edges(self, expanded):
         """graph_builder helpers call each other — expect intra-file CALLS edges."""
