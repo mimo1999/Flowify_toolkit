@@ -7,7 +7,7 @@ string typed by an anonymous internet visitor and hands it to ``git``.
 
 Threat model this guards against:
   - SSRF / internal-network probing via non-github hosts or non-https schemes.
-  - GitPython's "ext::" transport, which runs an arbitrary local command
+  - git's "ext::" transport, which runs an arbitrary local command
     (`git clone "ext::sh -c id"` executes `id`) — rejected explicitly.
   - `file://` and bare local paths, which would let a "URL" field read the
     server's own filesystem — rejected explicitly.
@@ -23,16 +23,10 @@ from __future__ import annotations
 import contextlib
 import os
 import shutil
+import subprocess
 import tempfile
 from pathlib import Path
 from urllib.parse import urlparse
-
-try:
-    from git import Repo
-    from git.exc import GitCommandError
-except ImportError:  # pragma: no cover - GitPython is a hard requirement in prod
-    Repo = None
-    GitCommandError = Exception
 
 ALLOWED_HOSTS = {"github.com", "gitlab.com", "bitbucket.org", "codeberg.org"}
 
@@ -46,6 +40,7 @@ _CLONE_ENV = {
     "GIT_ASKPASS": "echo",
     "GIT_CONFIG_NOSYSTEM": "1",
     "GIT_SSH_COMMAND": "false",  # disable SSH transport entirely
+    "GIT_ALLOW_PROTOCOL": "https",  # and everything else (ext::, file, git://) even if a URL slipped past validation
 }
 
 
@@ -61,7 +56,7 @@ def validate_repo_url(url: str) -> str:
         raise InvalidRepoUrl("repo_url is required")
     url = url.strip()
 
-    # Reject the transports GitPython/git would otherwise happily execute.
+    # Reject the transports git would otherwise happily execute.
     lowered = url.lower()
     for bad in ("ext::", "file://", "ssh://", "git://", "fd::"):
         if lowered.startswith(bad):
@@ -111,24 +106,19 @@ def clone_to_temp(url: str):
         with cloner.clone_to_temp(repo_url) as local_path:
             payload = pipeline.ingest(str(local_path))
     """
-    if Repo is None:
-        raise RuntimeError("GitPython is not installed; cannot clone repositories")
-
     normalized = validate_repo_url(url)
     os.makedirs(FLOWIFY_WORKDIR, exist_ok=True)
     tmp_dir = tempfile.mkdtemp(prefix="flowify-clone-", dir=FLOWIFY_WORKDIR)
     try:
         env = {**os.environ, **_CLONE_ENV}
         try:
-            Repo.clone_from(
-                normalized,
-                tmp_dir,
-                depth=1,
-                single_branch=True,
-                env=env,
-            )
-        except GitCommandError as e:
-            raise InvalidRepoUrl(f"clone failed: {e}") from e
+            subprocess.run(["git", "clone", "--depth", "1", "--single-branch", "--", normalized, tmp_dir],
+                           env=env, capture_output=True, text=True, check=True)
+        except FileNotFoundError as e:
+            raise RuntimeError("git is not installed; cannot clone repositories") from e
+        except subprocess.CalledProcessError as e:
+            lines = (e.stderr or "").strip().splitlines()
+            raise InvalidRepoUrl(f"clone failed: {lines[-1] if lines else 'git exited ' + str(e.returncode)}") from e
 
         size_mb = _dir_size_mb(Path(tmp_dir))
         if size_mb > MAX_CLONE_MB:
