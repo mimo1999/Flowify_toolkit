@@ -1,0 +1,492 @@
+[
+  {
+    "culprit_pr": 41184,
+    "fix_pr": 47031,
+    "culprit": "dc68bd8c41",
+    "fix": "63fcce4de1",
+    "culprit_title": "[MoE Refactor] FusedMoE/MoERunner inversion refactor (#41184)",
+    "fix_title": "[Bugfix] Fix GraniteMoeShared weight loading broken by #41184 (#47031)",
+    "ingest_seconds": 209.6,
+    "graph_functions": 50746,
+    "changed_functions": 274,
+    "upstream_functions": 439,
+    "unconfirmed_callers": 61063,
+    "top_risk": "critical",
+    "fix_functions": [
+      "vllm/model_executor/models/granitemoeshared.py::GraniteMoeSharedModel.load_weights"
+    ],
+    "fix_functions_in_graph": 1,
+    "verdict": "same",
+    "hits": [
+      "vllm/model_executor/models/granitemoeshared.py::GraniteMoeSharedModel.load_weights"
+    ],
+    "hit_is_test": false
+  },
+  {
+    "culprit_pr": 41184,
+    "fix_pr": 45037,
+    "culprit": "dc68bd8c41",
+    "fix": "29026682cb",
+    "culprit_title": "[MoE Refactor] FusedMoE/MoERunner inversion refactor (#41184)",
+    "fix_title": "[Bugfix] Fix nemotron accuracy drop introduced by #41184 (#45037)",
+    "ingest_seconds": 209.6,
+    "graph_functions": 50746,
+    "changed_functions": 274,
+    "upstream_functions": 439,
+    "unconfirmed_callers": 61063,
+    "top_risk": "critical",
+    "fix_functions": [
+      "vllm/model_executor/layers/fused_moe/layer.py::FusedMoE"
+    ],
+    "fix_functions_in_graph": 1,
+    "verdict": "same",
+    "hits": [
+      "vllm/model_executor/layers/fused_moe/layer.py::FusedMoE"
+    ],
+    "hit_is_test": false
+  },
+  {
+    "culprit_pr": 41184,
+    "fix_pr": 45054,
+    "culprit": "dc68bd8c41",
+    "fix": "f4966f8b3d",
+    "culprit_title": "[MoE Refactor] FusedMoE/MoERunner inversion refactor (#41184)",
+    "fix_title": "[Bugfix] Fix weight loading issues caused by #41184 (#45054)",
+    "ingest_seconds": 209.6,
+    "graph_functions": 50746,
+    "changed_functions": 274,
+    "upstream_functions": 439,
+    "unconfirmed_callers": 61063,
+    "top_risk": "critical",
+    "fix_functions": [
+      "vllm/model_executor/models/qwen3_vl_moe.py::Qwen3MoeLLMModel.load_weights",
+      "vllm/model_executor/models/step3_text.py::Step3TextModel.load_weights",
+      "vllm/model_executor/models/step3p5.py::Step3p5Model.load_weights",
+      "vllm/models/deepseek_v4/quant_config.py::DeepseekV4FP8Config.get_quant_method",
+      "vllm/models/deepseek_v4/quant_config.py::DeepseekV4FP8Config.is_mxfp4_quant"
+    ],
+    "fix_functions_in_graph": 5,
+    "verdict": "dependent",
+    "hits": [
+      "vllm/model_executor/models/step3p5.py::Step3p5Model.load_weights"
+    ],
+    "hit_is_test": false
+  },
+  {
+    "culprit_pr": 36487,
+    "fix_pr": 38970,
+    "culprit": "abebd9323d",
+    "fix": "2a36d8fb72",
+    "culprit_title": "[CPU] Replace OMP initialization (#36487)",
+    "fix_title": "[Bugfix][CPU] Fix macOS compatibility broken by #36487 (#38970)",
+    "ingest_seconds": 140.8,
+    "graph_functions": 41549,
+    "changed_functions": 15,
+    "upstream_functions": 0,
+    "unconfirmed_callers": 2072,
+    "top_risk": "medium",
+    "fix_functions": [
+      "vllm/platforms/cpu.py::CpuPlatform.get_global_cpu_mask",
+      "vllm/utils/ompmultiprocessing.py::OMPProcessManager.__init__",
+      "vllm/utils/ompmultiprocessing.py::_get_cpu_topology_json",
+      "vllm/utils/ompmultiprocessing.py::_get_default_affinity",
+      "vllm/utils/ompmultiprocessing.py::enumerate_resources"
+    ],
+    "fix_functions_in_graph": 3,
+    "verdict": "same",
+    "hits": [
+      "vllm/platforms/cpu.py::CpuPlatform.get_global_cpu_mask",
+      "vllm/utils/ompmultiprocessing.py::OMPProcessManager.__init__",
+      "vllm/utils/ompmultiprocessing.py::enumerate_resources"
+    ],
+    "hit_is_test": false
+  },
+  {
+    "culprit_pr": 32993,
+    "fix_pr": 34543,
+    "culprit": "59d53066d8",
+    "fix": "a0638d052d",
+    "culprit_title": "[Feature] Support CPU Offloading without Pytorch Pinned Memory that leads to doubled allocation (#32993)",
+    "fix_title": "[Bugfix] Fix ROCm UVA CPU weight offloading broken by #32993 (#34543)",
+    "ingest_seconds": 120.2,
+    "graph_functions": 36226,
+    "changed_functions": 5,
+    "upstream_functions": 242,
+    "unconfirmed_callers": 0,
+    "top_risk": "critical",
+    "fix_functions": [
+      "vllm/utils/torch_utils.py::get_accelerator_view_from_cpu_tensor"
+    ],
+    "fix_functions_in_graph": 1,
+    "verdict": "same",
+    "hits": [
+      "vllm/utils/torch_utils.py::get_accelerator_view_from_cpu_tensor"
+    ],
+    "hit_is_test": false
+  },
+  {
+    "culprit_pr": 25954,
+    "fix_pr": 33046,
+    "culprit": "a28b94e6ef",
+    "fix": "edf927bc9f",
+    "culprit_title": "[Performance] Split FlashAttn attention and cache update (#25954)",
+    "fix_title": "[Model Runner V2] Fix slot_mapping after #25954 (#33046)",
+    "ingest_seconds": 111.7,
+    "graph_functions": 34078,
+    "changed_functions": 48,
+    "upstream_functions": 100,
+    "unconfirmed_callers": 5409,
+    "top_risk": "critical",
+    "fix_functions": [
+      "vllm/v1/worker/gpu/cudagraph_utils.py::CudaGraphManager.capture_graph",
+      "vllm/v1/worker/gpu/cudagraph_utils.py::prepare_inputs_to_capture",
+      "vllm/v1/worker/gpu/input_batch.py::InputBatch.make_dummy",
+      "vllm/v1/worker/gpu/model_runner.py::GPUModelRunner.execute_model",
+      "vllm/v1/worker/gpu/model_runner.py::GPUModelRunner.prepare_dummy_attn_metadata",
+      "vllm/v1/worker/gpu/model_runner.py::GPUModelRunner.prepare_inputs",
+      "vllm/v1/worker/gpu/model_runner.py::GPUModelRunner.profile_run",
+      "vllm/v1/worker/gpu/spec_decode/eagle.py::EagleSpeculator.generate_draft",
+      "vllm/v1/worker/gpu/spec_decode/eagle.py::EagleSpeculator.propose",
+      "vllm/v1/worker/gpu/spec_decode/eagle.py::EagleSpeculator.run_model",
+      "vllm/v1/worker/gpu/spec_decode/eagle_cudagraph.py::EagleCudaGraphManager.capture_graph"
+    ],
+    "fix_functions_in_graph": 11,
+    "verdict": "dependent",
+    "hits": [
+      "vllm/v1/worker/gpu/model_runner.py::GPUModelRunner.profile_run",
+      "vllm/v1/worker/gpu/spec_decode/eagle.py::EagleSpeculator.generate_draft",
+      "vllm/v1/worker/gpu/spec_decode/eagle.py::EagleSpeculator.propose",
+      "vllm/v1/worker/gpu/spec_decode/eagle.py::EagleSpeculator.run_model",
+      "vllm/v1/worker/gpu/spec_decode/eagle_cudagraph.py::EagleCudaGraphManager.capture_graph"
+    ],
+    "hit_is_test": false
+  },
+  {
+    "culprit_pr": 29546,
+    "fix_pr": 30267,
+    "culprit": "541a2ef892",
+    "fix": "ae339b1a67",
+    "culprit_title": "[Perf] Deepgemm fused layout kernel for activations, 4.3% throughput improvement, 10.7% TTFT improvement. (#29546)",
+    "fix_title": "[Bugfix] Fix DeepGEMM after #29546  (#30267)",
+    "ingest_seconds": 110.3,
+    "graph_functions": 30534,
+    "changed_functions": 3,
+    "upstream_functions": 4,
+    "unconfirmed_callers": 0,
+    "top_risk": "medium",
+    "fix_functions": [
+      "vllm/model_executor/layers/quantization/utils/fp8_utils.py::W8A8BlockFp8LinearOp._run_deepgemm"
+    ],
+    "fix_functions_in_graph": 1,
+    "verdict": "same",
+    "hits": [
+      "vllm/model_executor/layers/quantization/utils/fp8_utils.py::W8A8BlockFp8LinearOp._run_deepgemm"
+    ],
+    "hit_is_test": false
+  },
+  {
+    "culprit_pr": 28549,
+    "fix_pr": 28819,
+    "culprit": "e439c784fa",
+    "fix": "93c8672ceb",
+    "culprit_title": "Add support for Eagle with separate lm-head and embed_tokens layers (#28549)",
+    "fix_title": "[Bugfix] Fix spec decode memory regression after #28549 (#28819)",
+    "ingest_seconds": 109.5,
+    "graph_functions": 29156,
+    "changed_functions": 18,
+    "upstream_functions": 3,
+    "unconfirmed_callers": 399,
+    "top_risk": "high",
+    "fix_functions": [
+      "vllm/model_executor/models/deepseek_eagle.py::DeepseekV2Model.load_weights",
+      "vllm/model_executor/models/llama4_eagle.py::LlamaModel.load_weights",
+      "vllm/model_executor/models/llama_eagle.py::LlamaModel.load_weights",
+      "vllm/v1/spec_decode/eagle.py::EagleProposer.load_model"
+    ],
+    "fix_functions_in_graph": 4,
+    "verdict": "same",
+    "hits": [
+      "vllm/v1/spec_decode/eagle.py::EagleProposer.load_model"
+    ],
+    "hit_is_test": false
+  },
+  {
+    "culprit_pr": 28603,
+    "fix_pr": 28816,
+    "culprit": "5e973209aa",
+    "fix": "f8b19c0ffd",
+    "culprit_title": "[BugFix] Fix type error when assign a trition kernel tensor to a torch.nn.Parameter (#28603)",
+    "fix_title": "[Bugfix] Fix GPT-OSS on AMD after #28603 (#28816)",
+    "ingest_seconds": 105.2,
+    "graph_functions": 29013,
+    "changed_functions": 1,
+    "upstream_functions": 0,
+    "unconfirmed_callers": 1,
+    "top_risk": "low",
+    "fix_functions": [
+      "vllm/model_executor/layers/quantization/mxfp4.py::Mxfp4MoEMethod.process_weights_after_loading"
+    ],
+    "fix_functions_in_graph": 1,
+    "verdict": "same",
+    "hits": [
+      "vllm/model_executor/layers/quantization/mxfp4.py::Mxfp4MoEMethod.process_weights_after_loading"
+    ],
+    "hit_is_test": false
+  },
+  {
+    "culprit_pr": 24642,
+    "fix_pr": 26123,
+    "culprit": "5e4a8223c6",
+    "fix": "dd96465fd7",
+    "culprit_title": "[Qwen][ROCm] Flash Attention Rotary Embeddings (#24642)",
+    "fix_title": "[BugFix][QWEN-VL]fix wrong apply_rotary_emb_torch selection introduced by #24642 (#26123)",
+    "ingest_seconds": 104.6,
+    "graph_functions": 26238,
+    "changed_functions": 2,
+    "upstream_functions": 1,
+    "unconfirmed_callers": 2,
+    "top_risk": "low",
+    "fix_functions": [
+      "vllm/model_executor/layers/rotary_embedding/common.py::dispatch_rotary_emb_function",
+      "vllm/model_executor/models/qwen2_vl.py::apply_rotary_pos_emb_vision"
+    ],
+    "fix_functions_in_graph": 2,
+    "verdict": "same",
+    "hits": [
+      "vllm/model_executor/layers/rotary_embedding/common.py::dispatch_rotary_emb_function",
+      "vllm/model_executor/models/qwen2_vl.py::apply_rotary_pos_emb_vision"
+    ],
+    "hit_is_test": false
+  },
+  {
+    "culprit_pr": 14274,
+    "fix_pr": 14459,
+    "culprit": "cc10281498",
+    "fix": "66e16a038e",
+    "culprit_title": "[Misc] Set default value of seed to None (#14274)",
+    "fix_title": "[Bugfix] Fix torch_xla which can't handle None seed introduced in #14274 (#14459)",
+    "ingest_seconds": 66.9,
+    "graph_functions": 17418,
+    "changed_functions": 8,
+    "upstream_functions": 91,
+    "unconfirmed_callers": 855,
+    "top_risk": "critical",
+    "fix_functions": [
+      "vllm/v1/worker/tpu_worker.py::TPUWorker.__init__"
+    ],
+    "fix_functions_in_graph": 1,
+    "verdict": "missed",
+    "hits": [],
+    "hit_is_test": false
+  },
+  {
+    "culprit_pr": 12405,
+    "fix_pr": 12434,
+    "culprit": "3132a933b6",
+    "fix": "68f11149d8",
+    "culprit_title": "[Bugfix][Kernel] FA3 Fix - RuntimeError: This flash attention build only supports pack_gqa (for build size reasons). (#12405)",
+    "fix_title": "[Bugfix][Kernel] Fix perf regression caused by PR #12405 (#12434)",
+    "ingest_seconds": 60.0,
+    "graph_functions": 14487,
+    "changed_functions": 0,
+    "upstream_functions": 0,
+    "unconfirmed_callers": 0,
+    "top_risk": null,
+    "fix_functions": [],
+    "fix_functions_in_graph": 0,
+    "verdict": "n/a",
+    "why": "culprit changed no Python function the graph tracks"
+  },
+  {
+    "culprit_pr": 32723,
+    "fix_pr": 38576,
+    "culprit": "098b2d66fe",
+    "fix": "44eef0ca1e",
+    "culprit_title": "[Benchmark] Don't default to `temperature==0` in `vllm bench serve` (#32723)",
+    "fix_title": "vLLM Benchmark Suite perf regression after PR#32723 (#38576)",
+    "ingest_seconds": 141.5,
+    "graph_functions": 33748,
+    "changed_functions": 5,
+    "upstream_functions": 1,
+    "unconfirmed_callers": 9,
+    "top_risk": "medium",
+    "fix_functions": [],
+    "fix_functions_in_graph": 0,
+    "verdict": "n/a",
+    "why": "fix changed no Python function"
+  },
+  {
+    "culprit_pr": 57797,
+    "fix_pr": 61678,
+    "culprit": "19aba3e4d5",
+    "fix": "222e00fc44",
+    "culprit_title": "[Bugfix][RL] Load attention sinks through weight_loader for layerwise reload (#57797)",
+    "fix_title": "[CI/Build] Fix test_deepseek_v41_mxfp8_scale_loading after #57797 (#61678)",
+    "ingest_seconds": 282.8,
+    "graph_functions": 87890,
+    "changed_functions": 49,
+    "upstream_functions": 24,
+    "unconfirmed_callers": 33986,
+    "top_risk": "high",
+    "fix_functions": [
+      "tests/quantization/test_fp8.py::test_deepseek_v41_mxfp8_scale_loading"
+    ],
+    "fix_functions_in_graph": 1,
+    "verdict": "possible",
+    "hits": [
+      "tests/quantization/test_fp8.py::test_deepseek_v41_mxfp8_scale_loading"
+    ],
+    "hit_is_test": false
+  },
+  {
+    "culprit_pr": 57053,
+    "fix_pr": 60116,
+    "culprit": "74c5cbcd7b",
+    "fix": "8542c3eff5",
+    "culprit_title": "[Bugfix][MRV2][Spec Decode] Honor dynamic K in autoregressive speculators, 1.2~1.3x kernel perf improvement (#57053)",
+    "fix_title": "[CI] Fix test_mixed_warmup_gate after #57053 (#60116)",
+    "ingest_seconds": 169.9,
+    "graph_functions": 84071,
+    "changed_functions": 28,
+    "upstream_functions": 41,
+    "unconfirmed_callers": 3217,
+    "top_risk": "high",
+    "fix_functions": [
+      "tests/v1/worker/test_mixed_warmup_gate.py::test_mixed_warmup_disables_watermarking"
+    ],
+    "fix_functions_in_graph": 1,
+    "verdict": "dependent",
+    "hits": [
+      "tests/v1/worker/test_mixed_warmup_gate.py::test_mixed_warmup_disables_watermarking"
+    ],
+    "hit_is_test": true
+  },
+  {
+    "culprit_pr": 58648,
+    "fix_pr": 59508,
+    "culprit": "a8e069f81b",
+    "fix": "d7c55116ac",
+    "culprit_title": "[Bugfix][MiniMax M3] Share target embeddings with MTP under PP (#58648)",
+    "fix_title": "[CI] Fix MiniMax-M3 PP aux-state test mock after #58648 (#59508)",
+    "ingest_seconds": 176.6,
+    "graph_functions": 82465,
+    "changed_functions": 16,
+    "upstream_functions": 20,
+    "unconfirmed_callers": 12996,
+    "top_risk": "high",
+    "fix_functions": [
+      "tests/v1/worker/test_eagle3_aux_hidden_states_pp.py::minimax_pp_stage.make_stage"
+    ],
+    "fix_functions_in_graph": 0,
+    "verdict": "missed",
+    "hits": [],
+    "hit_is_test": false
+  },
+  {
+    "culprit_pr": 57405,
+    "fix_pr": 57641,
+    "culprit": "ac78445bc9",
+    "fix": "674b6d95d6",
+    "culprit_title": "[MoE] Encapsulate TRT-LLM BF16 weight layout handling (#57405)",
+    "fix_title": "[CI][Bugfix] Fix MoE reprocess test mock after #57405's kernel refactor (#57641)",
+    "ingest_seconds": 166.7,
+    "graph_functions": 78097,
+    "changed_functions": 15,
+    "upstream_functions": 7,
+    "unconfirmed_callers": 516,
+    "top_risk": "medium",
+    "fix_functions": [
+      "tests/kernels/moe/test_flashinfer.py::_make_unquantized_flashinfer_test_layer"
+    ],
+    "fix_functions_in_graph": 1,
+    "verdict": "possible",
+    "hits": [
+      "tests/kernels/moe/test_flashinfer.py::_make_unquantized_flashinfer_test_layer"
+    ],
+    "hit_is_test": false
+  },
+  {
+    "culprit_pr": 38139,
+    "fix_pr": 38495,
+    "culprit": "995dea1354",
+    "fix": "a08b7733fd",
+    "culprit_title": "[Perf] Remove redundant device copies for CPU-only pooling token IDs, 48.9% E2E throughput improvement (#38139)",
+    "fix_title": "[CI] Fix SPLADE pooler test broken by #38139 (#38495)",
+    "ingest_seconds": 81.0,
+    "graph_functions": 40323,
+    "changed_functions": 12,
+    "upstream_functions": 18,
+    "unconfirmed_callers": 187,
+    "top_risk": "high",
+    "fix_functions": [
+      "tests/models/language/pooling/test_splade_sparse_pooler.py::test_splade_pooler_matches_reference_formula"
+    ],
+    "fix_functions_in_graph": 1,
+    "verdict": "missed",
+    "hits": [],
+    "hit_is_test": false
+  },
+  {
+    "culprit_pr": 32810,
+    "fix_pr": 50322,
+    "culprit": "889722f3bf",
+    "fix": "a7a204cc6e",
+    "culprit_title": "[FlashMLA] Update FlashMLA to expose new arguments (#32810)",
+    "fix_title": "Add FlashMLA H100 tests to CI, fix them after #32810 (#50322)",
+    "ingest_seconds": 69.0,
+    "graph_functions": 33711,
+    "changed_functions": 10,
+    "upstream_functions": 9,
+    "unconfirmed_callers": 0,
+    "top_risk": "medium",
+    "fix_functions": [
+      "tests/kernels/attention/test_flashmla.py::test_flash_mla.flash_mla",
+      "tests/kernels/attention/test_mla_cross_layer_kernel_equivalence.py::test_flashmla_dense_fp8_decode_unified_slot_view"
+    ],
+    "fix_functions_in_graph": 1,
+    "verdict": "missed",
+    "hits": [],
+    "hit_is_test": false
+  },
+  {
+    "culprit_pr": 23791,
+    "fix_pr": 23847,
+    "culprit": "186aced5ff",
+    "fix": "006477e60b",
+    "culprit_title": "[Kernel] cuda kernels for upcoming decode context parallel feature (#23791)",
+    "fix_title": "[ROCm][Fix] Fix rocm build caused by #23791 (#23847)",
+    "ingest_seconds": 47.3,
+    "graph_functions": 26287,
+    "changed_functions": 3,
+    "upstream_functions": 0,
+    "unconfirmed_callers": 0,
+    "top_risk": "low",
+    "fix_functions": [],
+    "fix_functions_in_graph": 0,
+    "verdict": "n/a",
+    "why": "fix changed no Python function"
+  },
+  {
+    "culprit_pr": 16457,
+    "fix_pr": 17511,
+    "culprit": "b22980a1dc",
+    "fix": "7ab643e425",
+    "culprit_title": "[Perf]Optimize rotary_emb implementation to use Triton operator for improved inference performance (#16457)",
+    "fix_title": "FIxing the AMD test failures caused by PR#16457 (#17511)",
+    "ingest_seconds": 45.6,
+    "graph_functions": 19616,
+    "changed_functions": 3,
+    "upstream_functions": 2,
+    "unconfirmed_callers": 9,
+    "top_risk": "medium",
+    "fix_functions": [
+      "vllm/model_executor/layers/rotary_embedding.py::_apply_rotary_emb"
+    ],
+    "fix_functions_in_graph": 1,
+    "verdict": "same",
+    "hits": [
+      "vllm/model_executor/layers/rotary_embedding.py::_apply_rotary_emb"
+    ],
+    "hit_is_test": false
+  }
+]

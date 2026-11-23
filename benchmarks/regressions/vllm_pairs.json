@@ -1,0 +1,12 @@
+{
+  "repo": "https://github.com/vllm-project/vllm",
+  "selection": "Every commit whose subject says it fixes something 'after / broken by / introduced by / caused by #N' (git log -E --grep), minus docs and pre-commit-only fixes. Not hand-picked for outcome.",
+  "dirs": ["vllm", "tests"],
+  "pairs": [
+    [41184, 47031], [41184, 45037], [41184, 45054],
+    [36487, 38970], [32993, 34543], [25954, 33046], [29546, 30267],
+    [28549, 28819], [28603, 28816], [24642, 26123], [14274, 14459], [12405, 12434],
+    [32723, 38576], [57797, 61678], [57053, 60116], [58648, 59508], [57405, 57641],
+    [38139, 38495], [32810, 50322], [23791, 23847], [16457, 17511]
+  ]
+}
