@@ -165,7 +165,8 @@ All provider responses are cached to `_store/llm_cache/` keyed by SHA256 of the 
 | `FLOWIFY_ALLOWED_ROOTS` | *(unset)* | `server` mode only: `os.pathsep`-separated local paths ingest is allowed to read |
 | `FLOWIFY_WORKDIR` | system temp dir | Where git-URL clones are made before ingest, then deleted |
 | `FLOWIFY_MAX_CLONE_MB` | `100` | Reject a git-URL clone larger than this (clones are shallow, `depth=1`, regardless) |
-| `FLOWIFY_CORS_ORIGINS` | `*` | Comma-separated allowed origins |
+| `FLOWIFY_CORS_ORIGINS` | `server`: `*`; `local`: `http://localhost:5173,http://127.0.0.1:5173,http://localhost:8000` | Comma-separated allowed origins. Local mode is narrow because its review endpoints run tests and write into the repo — see [Deploying the review workflow](#deploying-the-review-workflow) |
+| `FLOWIFY_REVIEW_MODEL` / `FLOWIFY_REVIEW_EFFORT` | `claude-haiku-5-5` / `medium` | Model and effort for Claude review notes (local mode only) |
 | `FLOWIFY_GRAPH_TTL_H` | `24` | `server` mode only: delete graphs older than this many hours |
 | `FLOWIFY_RATE_LIMIT_PER_MIN` | `6` | `server` mode only: per-IP cap on ingest/query calls |
 | `FLOWIFY_LLM_CALLS_PER_DAY` | `300` | `server` mode only: global daily cap on query/flow-summary LLM calls — protects a shared server-side key from being drained by many visitors; returns 429 once hit |
@@ -229,6 +230,17 @@ build, and a Docker build on every push. `docker-publish.yml` pushes
 `ghcr.io/<owner>/<repo>` on version tags — free for public repos, no extra
 secret required. `deploy-render.yml` is only needed if you've turned off
 Render's default GitHub auto-deploy.
+
+### Deploying the review workflow
+
+The `review-workflow` branch adds the review screen, queue, test runs, author notes and Claude notes. Before merging it into the branch Render deploys from:
+
+- **Hosted site: no config change.** Every review, queue, test-run, notes and Claude endpoint returns 400 in `server` mode, and now does so before loading the graph. `render.yaml` already sets `FLOWIFY_CORS_ORIGINS="*"`, and `server` mode still defaults to `*`. No Anthropic key is needed on the server.
+- **Image:** `anthropic` is a new Python dependency and GitPython is gone. git was already installed in the [Dockerfile](Dockerfile), and is now the only way the app talks to git (clone, update, diff, worktrees).
+- **Clones time out after 300 s** (`cloner.CLONE_TIMEOUT`). A slow repo now fails with a clear error instead of holding the single worker.
+- **Local CORS is narrower.** Without `FLOWIFY_CORS_ORIGINS`, a `local` backend accepts only the dev UI (`localhost:5173`, `127.0.0.1:5173`) and itself (`localhost:8000`), so a website you visit cannot run your tests or write `.flowify/review.json`. Same-origin setups need nothing: Vite's `/api` proxy, or the Docker image serving the UI on `:7860`. A frontend on another origin talking to a `local` backend (Vercel, another port) must list that origin in `FLOWIFY_CORS_ORIGINS`.
+- **Review worktree folders were renamed** (`<ref>-<hash>` under `_store/.worktrees/`). Checkouts made before this change are no longer found by name. They are evicted as new ones open (max 5), or can be deleted by hand.
+- **Claude review** reads `ANTHROPIC_API_KEY` from the environment or the repo's `.env`, for this feature only. An unquoted trailing `# comment` on that line is now ignored. Cached notes live in `_store/llm_cache/review/` and are keyed on the system prompt, so a prompt change re-asks Claude.
 
 ### Ingest limits
 
