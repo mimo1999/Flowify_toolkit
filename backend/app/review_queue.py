@@ -91,7 +91,8 @@ def _root(repo: str) -> Path:
 
 
 def worktree_path(repo: str, ref: str) -> Path:
-    return _root(repo) / re.sub(r"[^A-Za-z0-9_.-]", "_", ref)[:80]
+    # the hash keeps refs that sanitise alike (feature/a, feature_a) in separate folders
+    return _root(repo) / f"{re.sub(r'[^A-Za-z0-9_.-]', '_', ref)[:70]}-{hashlib.sha1(ref.encode()).hexdigest()[:6]}"
 
 
 def open_worktree(repo: str, ref: str) -> Path:

@@ -36,7 +36,7 @@ function Badge({ worst }) {
 
 function status(graphId, b) {
   const rec = readRecord(reviewRecordKey(graphId, b.ref));
-  const seen = Object.keys(rec.checked).length + Object.keys(rec.flags).length;
+  const seen = new Set([...Object.keys(rec.checked), ...Object.keys(rec.flags)]).size;
   if (!rec.head && !seen) return { text: "not started", tone: "text-slate-400" };
   if (rec.head && !b.head.startsWith(rec.head.slice(0, 7)) && !rec.head.startsWith(b.head)) return { text: "new commits since you looked", tone: "text-amber-300" };
   if (rec.total && seen >= rec.total) return { text: "done", tone: "text-slate-300" };

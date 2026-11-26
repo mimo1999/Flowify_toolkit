@@ -25,7 +25,6 @@ log = logging.getLogger("flowify.ai_review")
 # Haiku 5.5: on the planted-bug eval it found what Opus 5.5 found at ~1/35 of the cost (docs/change-risk.md)
 MODEL = os.environ.get("FLOWIFY_REVIEW_MODEL", "claude-haiku-5-5")
 EFFORT = os.environ.get("FLOWIFY_REVIEW_EFFORT", "medium")
-PROMPT_VERSION = "1"
 MAX_CHUNKS = 8          # per run; the UI asks for the must-check bucket by default
 MAX_CONTEXT = 40_000    # characters per chunk
 MAX_NOTES = 5
@@ -38,10 +37,31 @@ findings from static checks, the call sites of its callers, the signatures it ca
 that reach it.
 
 Report only problems you can point at in the code you were given:
-- likely_bug: the change will make some code shown here behave wrongly (wrong value, crash, a caller \
-that now gets something it does not expect, a broken invariant, a race).
+- likely_bug: the change will make some code shown here behave wrongly (wrong value, crash, \
+broken invariant, race).
 - question: something the author must answer before this is merged, because the code alone cannot \
 say whether it is right.
+
+Read the removed lines next to the changed lines and work out what behaviour changed; then check \
+the list below for what the change touches.
+
+What to look for:
+- Contracts: a shown caller or override that no longer gets what it expects (arguments that bind, \
+return type and shape, None vs a value, raised exceptions); a removed guard, side effect or log line \
+that callers or tests depended on.
+- Edge cases: empty, None, zero, negative and single-element inputs; off-by-one in ranges, slices and \
+loop bounds; integer vs float division; < vs <= at a boundary.
+- Comparisons and types: strings compared as numbers (versions, ids), float equality, truthiness of \
+0, "" and [], `is` vs `==`, naive vs aware datetimes, units (ms vs s, bytes vs items).
+- Error handling: exceptions swallowed or turned into a default value, errors that used to surface and \
+now pass silently, resources not released on the error path, retries without a bound.
+- State: mutable default arguments, shared mutable state, check-then-act races, changed ordering of \
+side effects, caches that can now return stale or another caller's data.
+- Security: untrusted input reaching a shell, SQL, file path, URL fetch, eval or deserializer; an \
+authorization or validation check removed or moved after the action; secrets written to logs.
+- Signs of unverified generated code: a method, attribute or keyword that does not exist on the \
+callees shown; a new helper that duplicates one already called nearby; handling for a case that cannot \
+happen while a case that can is missed; tests that mock the code under test or assert nothing.
 
 Rules:
 - Every note cites at least one file and line from the given code and quotes that line exactly.
@@ -108,6 +128,9 @@ def _api_key() -> str | None:
         for line in ENV_FILE.read_text(encoding="utf-8-sig").splitlines():
             name, sep, value = line.strip().removeprefix("export ").partition("=")
             if sep and name.strip() == "ANTHROPIC_API_KEY":
+                value = value.strip()
+                if not value.startswith(("'", '"')):
+                    value = value.split(" #", 1)[0]  # an unquoted trailing comment
                 return value.strip().strip("\"'") or None
     except OSError:
         pass
@@ -120,9 +143,14 @@ def available() -> bool:
 
 # ── context ────────────────────────────────────────────────────────────────────────────────────
 
+def _safe(s: str) -> str:
+    """Repository text can hold `</code>`; escaped, it cannot close the data block it sits in."""
+    return s.replace("</", "<\\/")
+
+
 def _numbered(lines: list, a: int, b: int, marked: set = frozenset()) -> str:
     a, b = max(1, a), min(len(lines), b)
-    return "\n".join(f"{'>' if i in marked else ' '}{i:5d}| {lines[i - 1]}" for i in range(a, b + 1))
+    return "\n".join(f"{'>' if i in marked else ' '}{i:5d}| {_safe(lines[i - 1])}" for i in range(a, b + 1))
 
 
 def build_context(chunk: dict, span: tuple | None, head_lines, callees: list) -> tuple[str, dict]:
@@ -142,23 +170,23 @@ def build_context(chunk: dict, span: tuple | None, head_lines, callees: list) ->
     lines = show(f, a, b)
     parts = [f'<code file="{f}" name="{chunk["name"]}" lines="{a}-{b}">\n{_numbered(lines, a, b, marked)}\n</code>']
     if chunk.get("removed"):
-        rem = "\n".join(f"(was at {r['at']}) {l}" for r in chunk["removed"] for l in r["lines"])
+        rem = "\n".join(f"(was at {r['at']}) {_safe(l)}" for r in chunk["removed"] for l in r["lines"])
         parts.append(f"<removed>\n{rem}\n</removed>")
     if chunk.get("findings"):
         parts.append("<findings>\n" + "\n".join(
-            f"[{x['severity']}] {x['message']} ({x['evidence'][0]['file']}:{x['evidence'][0]['line']})" for x in chunk["findings"]
+            _safe(f"[{x['severity']}] {x['message']} ({x['evidence'][0]['file']}:{x['evidence'][0]['line']})") for x in chunk["findings"]
         ) + "\n</findings>")
     if callees:
         sig = []
         for c in callees[:30]:
             cl = show(c["file"], c["line"], c["line"])
             if 0 < c["line"] <= len(cl):
-                sig.append(f"{c['file']}:{c['line']}: {cl[c['line'] - 1].strip()}")
+                sig.append(f"{c['file']}:{c['line']}: {_safe(cl[c['line'] - 1].strip())}")
         if sig:
             parts.append("<callees>\n" + "\n".join(sig) + "\n</callees>")
     tests = chunk.get("impact", {}).get("tests", {})
     if tests.get("count"):
-        parts.append(f"<tests count=\"{tests['count']}\">\n" + "\n".join(tests.get("examples", [])) + "\n</tests>")
+        parts.append(f"<tests count=\"{tests['count']}\">\n" + "\n".join(map(_safe, tests.get("examples", []))) + "\n</tests>")
 
     callers = sorted(chunk.get("direct", []), key=lambda c: (c["file"] in (f,), -(c.get("confidence") or 0)))
     dropped, size = 0, sum(map(len, parts))
@@ -192,13 +220,14 @@ def ground(review: ChunkReview, allowed: dict) -> tuple[list, int]:
         for e in n.evidence:
             q = _norm(e.quote)
             shown = allowed.get(e.file, {})
-            hit = next((l for l in range(e.line - 2, e.line + 3) if len(q) >= 4 and q in _norm(shown.get(l, ""))), None)
+            hit = next((l for l in range(e.line - 2, e.line + 3) if len(q) >= 4 and (
+                q in _norm(shown.get(l, "")) or q in _norm(_safe(shown.get(l, ""))))), None)  # quoted as shown
             if hit is not None:
                 ok.append({"file": e.file, "line": hit, "code": shown[hit].strip()})
-        if ok and len(kept) < MAX_NOTES:
+        if not ok:
+            dropped += 1  # "dropped" means ungrounded: the UI says the quote was not found
+        elif len(kept) < MAX_NOTES:
             kept.append({"kind": n.kind, "claim": n.claim, "evidence": ok, "fix": n.fix})
-        else:
-            dropped += 1
     return kept, dropped
 
 
@@ -211,7 +240,7 @@ def _client():
 
 
 def _cache_path(context: str, model: str, effort: str) -> Path:
-    h = hashlib.sha256("\x00".join([model, effort, PROMPT_VERSION, context]).encode()).hexdigest()
+    h = hashlib.sha256("\x00".join([model, effort, SYSTEM, context]).encode()).hexdigest()
     return CACHE_DIR / f"{h}.json"
 
 

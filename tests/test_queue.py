@@ -142,3 +142,7 @@ def test_a_test_run_that_cannot_start_says_why(repo, monkeypatch):
     (repo / "tests" / "test_app.py").write_text("import not_a_module_xyz\n\ndef test_h():\n    pass\n")
     got = review_queue.run_tests(str(repo), ["tests/test_app.py::test_h"])
     assert got["error"].startswith("pytest could not run") and "not_a_module_xyz" in got["output"]
+
+
+def test_refs_that_sanitise_alike_get_separate_worktrees():
+    assert review_queue.worktree_path("r", "feature/a") != review_queue.worktree_path("r", "feature_a")

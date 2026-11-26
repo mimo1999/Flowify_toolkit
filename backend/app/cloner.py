@@ -31,6 +31,7 @@ from urllib.parse import urlparse
 ALLOWED_HOSTS = {"github.com", "gitlab.com", "bitbucket.org", "codeberg.org"}
 
 FLOWIFY_WORKDIR = os.environ.get("FLOWIFY_WORKDIR", tempfile.gettempdir())
+CLONE_TIMEOUT = 300  # seconds; a stalled clone must not hold a worker forever
 MAX_CLONE_MB = int(os.environ.get("FLOWIFY_MAX_CLONE_MB", "100"))
 
 # Environment forced onto every clone subprocess: no interactive prompts, no
@@ -113,7 +114,9 @@ def clone_to_temp(url: str):
         env = {**os.environ, **_CLONE_ENV}
         try:
             subprocess.run(["git", "clone", "--depth", "1", "--single-branch", "--", normalized, tmp_dir],
-                           env=env, capture_output=True, text=True, check=True)
+                           env=env, capture_output=True, text=True, check=True, timeout=CLONE_TIMEOUT)
+        except subprocess.TimeoutExpired as e:
+            raise InvalidRepoUrl(f"clone took longer than {CLONE_TIMEOUT} s") from e
         except FileNotFoundError as e:
             raise RuntimeError("git is not installed; cannot clone repositories") from e
         except subprocess.CalledProcessError as e:

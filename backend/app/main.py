@@ -52,7 +52,10 @@ FLOWIFY_MODE = os.environ.get("FLOWIFY_MODE", "local").lower().strip()
 IS_SERVER_MODE = FLOWIFY_MODE == "server"
 
 _cors_env = os.environ.get("FLOWIFY_CORS_ORIGINS", "").strip()
-CORS_ORIGINS = [o.strip() for o in _cors_env.split(",") if o.strip()] or ["*"]
+# local mode defaults to the UI's own origins: its endpoints run tests and write into the repo, so an
+# arbitrary website must not be able to call them (the UI itself is same-origin via the Vite proxy)
+CORS_ORIGINS = [o.strip() for o in _cors_env.split(",") if o.strip()] or (
+    ["*"] if IS_SERVER_MODE else ["http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:8000"])
 
 app = FastAPI(title="Flowify AI", version="0.1.0")
 app.add_middleware(
@@ -887,23 +890,32 @@ _GIT_REF = _re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_./@^~-]{0,199}$")  # no leading
 def _local_checkout(graph_id: str, *refs: str):
     """The graph's payload, when it is a local git checkout this process may run git in."""
     _check_owned(graph_id)
-    if any(not _GIT_REF.match(r) for r in refs):
-        raise HTTPException(400, "base must be a branch, tag or commit")
+    bad = next((r for r in refs if not _GIT_REF.match(r)), None)
+    if bad is not None:
+        raise HTTPException(400, f"'{bad[:50]}' is not a branch, tag or commit")
+    local_only = HTTPException(400, "Reviewing a change needs a local git checkout of the repository.")
+    if IS_SERVER_MODE:
+        raise local_only  # before loading the graph: the hosted tier has little memory
     payload = storage.load_light(graph_id)
     if payload is None:
         raise HTTPException(404, "graph not found")
     repo = payload.repo_path
-    if IS_SERVER_MODE or repo.startswith(("https://", "http://")) or not os.path.isdir(repo):
-        raise HTTPException(400, "Reviewing a change needs a local git checkout of the repository.")
+    if repo.startswith(("https://", "http://")) or not os.path.isdir(repo):
+        raise local_only
     return payload
 
 
-def _review(payload, base: str, committed: bool = False) -> dict:
+def _diff_review(payload, base: str, committed: bool = False) -> dict:
+    """pr_impact.review with git failures (a bad or vanished ref, no git) turned into a 400."""
     try:
-        out = pr_impact.review(payload, base, committed=committed)
+        return pr_impact.review(payload, base, committed=committed)
     except (subprocess.CalledProcessError, FileNotFoundError) as e:
         detail = (getattr(e, "stderr", "") or "").strip().splitlines()[-1:] or ["git is not available"]
         raise HTTPException(400, f"Could not diff against '{base}': {detail[0]}")
+
+
+def _review(payload, base: str, committed: bool = False) -> dict:
+    out = _diff_review(payload, base, committed)
     out["parts"] = review_queue.parts(out["functions"])
     out["notes"] = review_queue.read_notes(payload.repo_path)
     out["ai_available"] = ai_review.available()
@@ -931,8 +943,7 @@ def review_ai(req: ReviewAIRequest):
     payload = _local_checkout(req.graph_id, req.base)
     if not ai_review.available():
         raise HTTPException(400, "Set ANTHROPIC_API_KEY to ask Claude about a change.")
-    out = pr_impact.review(payload, req.base)
-    chunks = _chunks_by_id(out)
+    chunks = _chunks_by_id(_diff_review(payload, req.base))
     by_id = {n.id: n for n in payload.function_nodes}
     calls: dict = {}
     for e in payload.function_edges:
@@ -962,7 +973,7 @@ def review_ai(req: ReviewAIRequest):
 def review_tests(req: ReviewTestsRequest):
     """Run the pytest tests that reach one chunk. The ids come from the graph, not the request."""
     payload = _local_checkout(req.graph_id, req.base)
-    c = _chunks_by_id(pr_impact.review(payload, req.base)).get(req.chunk_id)
+    c = _chunks_by_id(_diff_review(payload, req.base)).get(req.chunk_id)
     if c is None:
         raise HTTPException(404, "that change is not in the current diff")
     return {"head": pr_impact._git(payload.repo_path, "rev-parse", "HEAD"), "hash": c["hash"],
